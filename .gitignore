@@ -1,0 +1,4 @@
+playlist.m3u
+epg-merged.xml
+__pycache__/
+*.pyc
