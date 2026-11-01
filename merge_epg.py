@@ -14,8 +14,13 @@ whenever the playlist's channel lineup changes.
 What it does
 ------------
 1. Loads the channel ids to keep from channel_ids.txt.
-2. Fetches the upstream EPG, keeps only channels in that list.
-3. Trims to fit a size ceiling, reformats one-element-per-line.
+2. Fetches the upstream EPG; if that's down, falls back to a second public
+   EPG source that uses completely different (Japanese-named) channel ids,
+   remapped via FALLBACK_CHANNEL_MAP. The fallback only covers the major
+   networks plus a chunk of BS/CS channels (85 of our 100), never the full
+   lineup, so it uses its own lower channel-count threshold.
+3. Keeps only channels in channel_ids.txt, trims to fit a size ceiling,
+   reformats one-element-per-line.
 4. Refuses to publish a near-empty or decoy-looking result (safety nets).
 """
 import sys
@@ -32,11 +37,112 @@ SIZE_CAP = int(19.5 * 1024 * 1024)
 # no per-account tokens (unlike the playlist itself), so it's safe to commit.
 EPG_SRC = "https://0i4neux01.charandom.blog/epg/kai-epg.xml"
 
+# Used only if EPG_SRC is unreachable. A public, independently-run EPG with
+# no per-account tokens either, but its channel ids are display-name-based
+# Japanese strings with no relation to ours — see FALLBACK_CHANNEL_MAP.
+EPG_FALLBACK_SRC = "https://epgshare01.online/epgshare01/epg_ripper_JP2.xml.gz"
+
+# our tvg-id -> EPG_FALLBACK_SRC's channel id. Hand-built by matching channel
+# names (verified against a live fetch: all 85 ids existed and had >=1
+# programme). Only covers the major networks and some BS/CS channels, not
+# the many numbered BS/CS aliases EPG_SRC provides directly — if the
+# fallback renames one of these, that single channel just silently drops
+# out of coverage (harmless unless many do, which MIN_CHANNELS_FALLBACK
+# below catches).
+FALLBACK_CHANNEL_MAP = {
+    "cs15": "BBCニュース.jp",
+    "bs_11": "BS11.イレブン.jp",
+    "bs_12": "BS12トゥエルビ.jp",
+    "bs_yoshimoto": "BSよしもと.jp",
+    "bs05": "BSテレ東.jp",
+    "cs16": "CNNｊ.jp",
+    "dlife": "Dlife（ディーライフ）.jp",
+    "fighting_tv_samurai": "FIGHTING.TV.サムライ.jp",
+    "cs17": "GAORA.SPORTS.HD.jp",
+    "bs18": "J.SPORTS.1.HD.jp",
+    "bs19": "J.SPORTS.2.HD.jp",
+    "bs21": "J.SPORTS.3.HD.jp",
+    "bs22": "J.SPORTS.4.HD.jp",
+    "bs31": "J:COM.BS.jp",
+    "kbs-world_jp": "KBS.WORLD.HD.jp",
+    "kntv": "KNTV.jp",
+    "cs19": "LaLa.TV.jp",
+    "cs21": "MONDOTV.HD.jp",
+    "cs18": "MTV.HD.jp",
+    "mnet_jp": "Mnet.HD.jp",
+    "gd02": "NHK東京　教育.jp",
+    "gd01": "NHK東京　総合.jp",
+    "gd04": "TBS.jp",
+    "tbs_channel_1": "TBSチャンネル1.最新ドラマ・音楽・映画.jp",
+    "tbs_channel_2": "TBSチャンネル2.名作ドラマ・スポーツ・アニメ.jp",
+    "gd08": "TOKYO　MX.jp",
+    "v_paradise_nsfw": "V☆パラダイス.jp",
+    "wowow_plus": "WOWOWプラス.映画・ドラマ・スポーツ・音楽.jp",
+    "action_channel": "アクションチャンネル.jp",
+    "bs15": "アニマックスＨＤ.jp",
+    "cs24": "アニマルプラネット.jp",
+    "at-x": "アニメシアターX（AT-X）.jp",
+    "cs25": "カートゥーン.ネットワークHD.海外アニメ国内アニメ.jp",
+    "cs07": "キッズステーション.HD.jp",
+    "bs14": "グリーンチャンネルHD.jp",
+    "cs03": "ゴルフネットワーク.jp",
+    "the_cinema": "ザ・シネマ.HD.jp",
+    "cs01": "スカイA.jp",
+    "sport_live_plus": "スポーツライブ＋.jp",
+    "cs28": "タカラヅカ・スカイ・ステージ.jp",
+    "cs29": "チャンネル銀河　歴史ドラマ・サスペンス・日本のうた.jp",
+    "gd06": "テレビ朝日.jp",
+    "tv_asahi_channel_1": "テレ朝チャンネル１.jp",
+    "tv_asahi_channel_2": "テレ朝チャンネル２.jp",
+    "gd07": "テレ東.jp",
+    "cs08": "ディスカバリーチャンネル.jp",
+    "cs23": "ディズニージュニア.jp",
+    "bs24": "ディズニー・チャンネル.jp",
+    "cs10": "ナショナル.ジオグラフィック.jp",
+    "cs09": "ヒストリーチャンネル.日本・世界の歴史＆エンタメ.jp",
+    "cs20": "ファミリー劇場HD.jp",
+    "gd05": "フジテレビ.jp",
+    "cs26": "フジテレビＮＥＸＴ　ライブ・プレミアム.jp",
+    "fuji_tv_one": "フジテレビＯＮＥ　スポーツ・バラエティ.jp",
+    "fuji_tv_two": "フジテレビＴＷＯ　ドラマ・アニメ.jp",
+    "cs05": "ホームドラマチャンネルＨＤ.韓流・時代劇・国内ドラマ.jp",
+    "mystery_channel": "ミステリーチャンネル.jp",
+    "movie_plus": "ムービープラス.jp",
+    "me-tele_next": "メ〜テレNEXT.ドラマ・エンタメ・ダンス.jp",
+    "shogi_channel": "囲碁・将棋チャンネル.jp",
+    "cs12": "旅チャンネル　ＨＤ.jp",
+    "ntv_news24": "日テレNEWS24.HD.jp",
+    "cs02": "日テレジータス.HD.jp",
+    "nittele_plus": "日テレプラス.ドラマ・アニメ・音楽ライブ.jp",
+    "gd03": "日本テレビ.jp",
+    "bs23": "日本映画専門チャンネル　HD.jp",
+    "neco_ch": "映画･チャンネルNECO-HD.jp",
+    "cs04": "時代劇専門チャンネル.HD.jp",
+    "cs27": "東映チャンネルHD.jp",
+    "cs13": "歌謡ポップスチャンネル.jp",
+    "cs22": "衛星劇場HD.jp",
+    "bs25": "釣りビジョンHD.jp",
+    "bs26": "音楽・ライブ！　スペースシャワーTV.HD.jp",
+    "bs06": "ＢＳフジ・181.jp",
+    "bs02": "ＢＳ日テレ.jp",
+    "bs03": "ＢＳ朝日１.jp",
+    "bs04": "ＢＳ－ＴＢＳ.jp",
+    "bs10": "ＢＳ１０.jp",
+    "bs08": "ＢＳ１０プレミアム.jp",
+    "bs11": "ＮＨＫ　ＢＳ.jp",
+    "bs01": "ＮＨＫ　ＢＳＰ４Ｋ.jp",
+    "cs11": "ＴＢＳ.ＮＥＷＳ.jp",
+    "bs07": "ＷＯＷＯＷシネマ.jp",
+    "bs12": "ＷＯＷＯＷプライム.jp",
+    "bs20": "ＷＯＷＯＷライブ.jp",
+}
+
 CHANNEL_IDS_FILE = "channel_ids.txt"
 
 # Safety nets (see main()): abort rather than publish a broken/decoy feed.
-MIN_CHANNELS = 70       # last observed match was 98/100 channel ids
-MAX_TITLE_SHARE = 0.5   # one title must not dominate like this
+MIN_CHANNELS = 70            # primary source: last observed match 98/100
+MIN_CHANNELS_FALLBACK = 50   # fallback source: last observed match 85/100
+MAX_TITLE_SHARE = 0.5        # one title must not dominate like this
 
 
 def fetch(url, tries=3, timeout=240):
@@ -71,6 +177,37 @@ def repaired_root(text):
     except ET.ParseError as e:
         print(f"  WARN: parse error after repair: {e}", file=sys.stderr)
         return None
+
+
+def remap_fallback_ids(root):
+    """Rewrite the fallback feed's channel ids to our own tvg-ids in place,
+    using FALLBACK_CHANNEL_MAP, so downstream filtering doesn't need to know
+    which source produced the data. Elements with no entry in the map are
+    left untouched and simply won't match `needed` later."""
+    inverse = {fid: our_id for our_id, fid in FALLBACK_CHANNEL_MAP.items()}
+    for ch in root.findall("channel"):
+        our_id = inverse.get(ch.get("id"))
+        if our_id:
+            ch.set("id", our_id)
+    for pr in root.findall("programme"):
+        our_id = inverse.get(pr.get("channel"))
+        if our_id:
+            pr.set("channel", our_id)
+
+
+def load_source():
+    """Fetch the primary EPG; fall back to the secondary source (remapped to
+    our channel ids) if the primary is unreachable. Returns (root, used_fallback)."""
+    root = repaired_root(fetch(EPG_SRC))
+    if root is not None:
+        return root, False
+
+    print("  WARN: primary EPG source unavailable; trying fallback", file=sys.stderr)
+    root = repaired_root(fetch(EPG_FALLBACK_SRC))
+    if root is None:
+        return None, True
+    remap_fallback_ids(root)
+    return root, True
 
 
 def load_channel_ids():
@@ -124,11 +261,12 @@ def main():
     needed = load_channel_ids()
     print(f"tracking {len(needed)} channel ids from {CHANNEL_IDS_FILE}")
 
-    root = repaired_root(fetch(EPG_SRC))
+    root, used_fallback = load_source()
     if root is None:
-        print("ERROR: upstream EPG unavailable — refusing to overwrite the live EPG",
-              file=sys.stderr)
+        print("ERROR: primary and fallback EPG sources both unavailable — "
+              "refusing to overwrite the live EPG", file=sys.stderr)
         sys.exit(1)
+    print(f"source: {'fallback' if used_fallback else 'primary'}")
 
     out = ET.Element("tv", {"generator-info-name": "personal merged EPG"})
     n_ch = n_pr = 0
@@ -145,11 +283,13 @@ def main():
             titles[t] = titles.get(t, 0) + 1
     print(f"merged (full): {n_ch} channels, {n_pr} programmes")
 
-    # Safety net: last observed match was 98/100 playlist channel ids. If far
-    # fewer show up, upstream likely changed channel ids or is serving a
-    # broken file — abort so the Action keeps the last-good published file.
-    if n_ch < MIN_CHANNELS:
-        print(f"ERROR: only {n_ch} channels (< {MIN_CHANNELS}) — upstream EPG or "
+    # Safety net: abort rather than publish a feed that's missing most of its
+    # channels — upstream likely changed channel ids or is serving a broken
+    # file. The fallback only ever covers a subset (major networks + some
+    # BS/CS), so it gets its own, lower threshold.
+    min_required = MIN_CHANNELS_FALLBACK if used_fallback else MIN_CHANNELS
+    if n_ch < min_required:
+        print(f"ERROR: only {n_ch} channels (< {min_required}) — upstream EPG or "
               f"ids likely changed; refusing to overwrite the live EPG", file=sys.stderr)
         sys.exit(1)
 
