@@ -1,35 +1,48 @@
-"""Translate programme titles/descriptions of an XMLTV tree via Google Translate.
+"""Translate programme titles/descriptions of an XMLTV tree with Azure AI Translator.
 
-Uses Google's free, key-less web endpoint (translate.googleapis.com, client=gtx).
-It is unofficial and can rate-limit or block, so everything here is best effort:
-any text that can't be translated is left in Japanese and retried next build.
+Needs two environment variables (GitHub Actions secrets in the workflow):
+  AZURE_TRANSLATOR_KEY     key of an Azure "Translator" resource
+  AZURE_TRANSLATOR_REGION  that resource's region (e.g. "francecentral")
+Without them, translation is skipped and the translated editions stay in
+Japanese. (Google's free web endpoint was tried first: it rejects GitHub
+Actions runners outright with HTTP 429.)
+
+Everything here is best effort: any text that can't be translated is left in
+Japanese and retried next build; nothing here can stop the build.
 
 Translations are cached in TRANSLATION_CACHE (restored/saved between runs by
-the workflow's actions/cache step), so each build only sends programmes it
+the workflow's actions/cache step), so each build only pays for programmes it
 hasn't seen before. The cache is pruned to the texts used by the current
 build, so it never grows past one guide's worth.
 """
 import copy
 import json
+import os
 import re
 import sys
 import time
 from datetime import datetime, timezone
 import urllib.error
-import urllib.parse
 import urllib.request
 
 TRANSLATION_CACHE = "translation-cache.json"
-ENDPOINT = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=ja&tl={lang}&dt=t"
+ENDPOINT = "https://api.cognitive.microsofttranslator.com/translate?api-version=3.0&from=ja"
 
-# One request carries many texts joined by newlines (Google keeps the line
-# structure). Kept well under the endpoint's request size limit.
-CHUNK_CHARS = 4000
-REQUEST_PAUSE = 0.5          # seconds between requests, to stay polite
+# Azure accepts up to 1000 texts / 50,000 characters per request; stay well
+# under so one request (sent for both languages at once) stays small.
+CHUNK_CHARS = 10000
+CHUNK_TEXTS = 500
 
-# Japanese EPG flags like [字] (subtitled) or [デ] (data broadcast). Google
-# translates them literally ("[character]"), so the meaningful ones are
-# replaced with localized tags and the rest are dropped before translating.
+# Spend guard: Azure bills every source character once per target language
+# (S1 tier: ~$10 per million). A full guide is ~480k source characters, a
+# normal day's new programmes far less, so this only ever bites if something
+# goes wrong (e.g. the cache got lost every run). Override with
+# TRANSLATE_MAX_CHARS.
+MAX_SOURCE_CHARS_PER_RUN = int(os.environ.get("TRANSLATE_MAX_CHARS", "600000"))
+
+# Japanese EPG flags like [字] (subtitled) or [デ] (data broadcast). Machine
+# translation renders them literally ("[character]"), so the meaningful ones
+# are replaced with localized tags and the rest are dropped before translating.
 FLAG_RE = re.compile(r"\s*[\[［]([^\]］]{1,2})[\]］]")
 FLAG_LABELS = {
     "新": {"en": "[New]", "fr": "[Nouveau]"},
@@ -52,92 +65,99 @@ def split_flags(text):
 
 
 def clean(text):
-    # Newlines are the batch separator, so they can't appear inside a text.
     return " ".join((text or "").split())
 
 
-def google_translate_lines(lines, lang):
-    """Translate a list of single-line texts in one request. Returns a list of
-    the same length, or None if the request failed or the shape came back
-    wrong (so the caller can't mis-assign translations)."""
-    body = urllib.parse.urlencode({"q": "\n".join(lines)}).encode()
-    req = urllib.request.Request(
-        ENDPOINT.format(lang=lang), data=body,
-        headers={"User-Agent": "Mozilla/5.0",
-                 "Content-Type": "application/x-www-form-urlencoded;charset=utf-8"})
-    with urllib.request.urlopen(req, timeout=60) as r:
-        data = json.loads(r.read())
-    out = "".join(seg[0] for seg in data[0] if seg and seg[0]).split("\n")
-    if len(out) != len(lines):
-        return None
-    return [s.strip() for s in out]
+class Stop(Exception):
+    """Translation can't continue this build (bad key, quota exhausted...)."""
+
+
+def azure_translate(texts, langs, key, region):
+    """Translate texts into every lang in one request.
+    Returns {lang: [translation, ...]} aligned with texts."""
+    url = ENDPOINT + "".join(f"&to={lang}" for lang in langs)
+    body = json.dumps([{"Text": t} for t in texts]).encode()
+    headers = {"Ocp-Apim-Subscription-Key": key,
+               "Ocp-Apim-Subscription-Region": region,
+               "Content-Type": "application/json; charset=UTF-8"}
+    for attempt in range(5):
+        try:
+            req = urllib.request.Request(url, data=body, headers=headers)
+            with urllib.request.urlopen(req, timeout=120) as r:
+                data = json.loads(r.read())
+            if len(data) != len(texts):
+                raise ValueError(f"got {len(data)} results for {len(texts)} texts")
+            out = {lang: [] for lang in langs}
+            for item in data:
+                by_lang = {t["to"]: t["text"] for t in item["translations"]}
+                for lang in langs:
+                    out[lang].append((by_lang.get(lang) or "").strip() or None)
+            return out
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", "replace")[:300]
+            if e.code in (400, 401, 403):
+                # Bad key/region, or free-tier quota used up: retrying won't help.
+                raise Stop(f"HTTP {e.code}: {detail}") from e
+            wait = int(e.headers.get("Retry-After") or 0) or 10 * (attempt + 1)
+            print(f"  WARN: Azure HTTP {e.code}, retrying in {wait}s ({detail})",
+                  file=sys.stderr)
+        except Exception as e:  # noqa: BLE001 - network is allowed to flake
+            wait = 10 * (attempt + 1)
+            print(f"  WARN: Azure request failed ({e}), retrying in {wait}s",
+                  file=sys.stderr)
+        time.sleep(wait)
+    return {lang: [None] * len(texts) for lang in langs}
 
 
 def chunks(texts):
     batch, size = [], 0
     for t in texts:
-        if batch and size + len(t) + 1 > CHUNK_CHARS:
+        if batch and (size + len(t) > CHUNK_CHARS or len(batch) >= CHUNK_TEXTS):
             yield batch
             batch, size = [], 0
         batch.append(t)
-        size += len(t) + 1
+        size += len(t)
     if batch:
         yield batch
 
 
-class Blocked(Exception):
-    """Google is refusing this IP (429, or a redirect to its captcha page,
-    which urllib surfaces as 405). Retrying in this build is pointless."""
-
-
-def request_batch(batch, lang):
-    """Translate one batch, retrying transient errors. Returns a list aligned
-    with batch (None where a text failed), or raises Blocked."""
-    for attempt in range(3):
-        try:
-            result = google_translate_lines(batch, lang)
-            if result is None:
-                # Line count mismatch: fall back to one text per request.
-                result = []
-                for t in batch:
-                    r = google_translate_lines([t], lang)
-                    result.append(r[0] if r else None)
-                    time.sleep(REQUEST_PAUSE)
-            return result
-        except urllib.error.HTTPError as e:
-            if e.code in (403, 405, 429):
-                raise Blocked(f"HTTP {e.code}") from e
-            err = e
-        except Exception as e:  # noqa: BLE001 - unofficial endpoint
-            err = e
-        print(f"  WARN [{lang}]: request failed ({err}); retrying", file=sys.stderr)
-        time.sleep(5 * (attempt + 1))
-    return [None] * len(batch)
-
-
 def translate_all(ordered_texts, langs, cache):
-    """Translate texts missing from the cache, soonest-airing first, sending
-    each chunk to every language before moving on — so if Google blocks us
-    midway, the next days are covered in all languages rather than one."""
+    """Translate texts missing from the cache, soonest-airing first, so if
+    translation stops midway the next days are the ones covered."""
+    key = os.environ.get("AZURE_TRANSLATOR_KEY", "").strip()
+    region = os.environ.get("AZURE_TRANSLATOR_REGION", "").strip()
     tables = {lang: cache.setdefault(lang, {}) for lang in langs}
     todo = [t for t in ordered_texts if any(t not in tables[l] for l in langs)]
     print(f"  {len(ordered_texts)} distinct texts, {len(todo)} needing translation "
-          f"({sum(map(len, todo))} chars per language at most)")
+          f"({sum(map(len, todo))} source chars)")
+    if not todo:
+        return
+    if not key or not region:
+        print("  WARN: AZURE_TRANSLATOR_KEY / AZURE_TRANSLATOR_REGION not set; "
+              "skipping translation", file=sys.stderr)
+        return
+
     sent = dict.fromkeys(langs, 0)
+    budget = MAX_SOURCE_CHARS_PER_RUN
     try:
         for batch in chunks(todo):
-            for lang in langs:
-                need = [t for t in batch if t not in tables[lang]]
-                if not need:
-                    continue
-                for src, dst in zip(need, request_batch(need, lang)):
+            need = [l for l in langs if any(t not in tables[l] for t in batch)]
+            cost = sum(map(len, batch))
+            if cost > budget:
+                print(f"  WARN: per-run limit of {MAX_SOURCE_CHARS_PER_RUN} source "
+                      f"chars reached; the rest waits for the next build", file=sys.stderr)
+                break
+            budget -= cost
+            result = azure_translate(batch, need, key, region)
+            for lang in need:
+                for src, dst in zip(batch, result[lang]):
                     if dst:
                         tables[lang][src] = dst
                         sent[lang] += 1
-                time.sleep(REQUEST_PAUSE)
-    except Blocked as e:
-        print(f"  WARN: Google Translate is blocking this machine ({e}); the rest "
-              f"stays Japanese until a later build", file=sys.stderr)
+    except Stop as e:
+        print(f"  WARN: Azure Translator refused the request ({e}); the rest stays "
+              f"Japanese until a later build", file=sys.stderr)
+    print(f"  sent {MAX_SOURCE_CHARS_PER_RUN - budget} source chars to Azure")
     for lang in langs:
         print(f"  [{lang}] translated {sent[lang]} new texts")
 
@@ -161,7 +181,7 @@ def translated_trees(tree, langs):
     """Return {lang: translated copy of tree}. Never raises on network trouble:
     untranslated texts just stay in Japanese."""
     # Distinct texts ordered by when they first air, so the nearest days get
-    # translated first if Google cuts us off.
+    # translated first if translation stops midway.
     first_air = {}
     for pr in tree.findall("programme"):
         start = parse_start(pr.get("start"))

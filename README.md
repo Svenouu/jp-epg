@@ -49,16 +49,37 @@ tokens. Only the channel ids it references are committed, in
    stay mostly description-less.
 4. Trims the result to fit under a size ceiling and writes `epg-merged.xml`.
 5. `translate.py` then writes `epg-en.xml` and `epg-fr.xml`: titles and
-   descriptions translated through Google Translate's free, key-less web
-   endpoint. Translations are cached between runs (`translation-cache.json`,
-   kept by the workflow's `actions/cache` step), so a build only translates
-   programmes it hasn't seen before. The endpoint is unofficial and may
-   rate-limit: anything it fails to translate stays in Japanese and is
-   retried at the next build — it never blocks publishing.
+   descriptions translated with Azure AI Translator (see *Translation
+   setup* below). Translations are cached between runs
+   (`translation-cache.json`, kept by the workflow's `actions/cache` step),
+   so a build only pays for programmes it hasn't seen before, soonest-airing
+   first. Anything that fails to translate stays in Japanese and is retried
+   at the next build — it never blocks publishing.
 6. `.github/workflows/build-epg.yml` runs that script twice daily (16:00 &
    04:00 JST) and force-pushes the three files to the `dist` branch, which GitHub
    Pages serves. The daily commit also keeps the scheduled workflow from
    being auto-disabled for inactivity.
+
+## Translation setup
+
+The English/French editions need an Azure **Translator** resource (Azure
+portal → Create a resource → Translator; tier S1, ~$10 per million
+characters, billed per target language — F0's free 2M chars/month is too
+small for two languages). Then add two repository secrets (Settings →
+Secrets and variables → Actions):
+
+- `AZURE_TRANSLATOR_KEY` — one of the resource's keys (Keys and Endpoint)
+- `AZURE_TRANSLATOR_REGION` — its location, e.g. `francecentral`
+
+Secrets are encrypted, never visible in the repo or in logs, and not exposed
+to workflows triggered from forks. Without them the build still works; the
+translated editions just stay in Japanese.
+
+Cost: the first build translates a whole guide (~480k Japanese characters ×
+2 languages ≈ $10), later builds only new programmes. `TRANSLATE_MAX_CHARS`
+(default 600,000 source characters per run) caps spend if the cache is ever
+lost. Google's free web endpoint was tried first and rejects GitHub Actions
+runners outright (HTTP 429).
 
 ## Safety nets
 

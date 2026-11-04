@@ -31,7 +31,7 @@ jobs:
           python-version: "3.12"
 
       # Translations already done in earlier runs, so each build only sends
-      # new programmes to Google Translate. Cache keys are immutable, hence a
+      # new programmes to Azure Translator. Cache keys are immutable, hence a
       # fresh key per run, restored from the most recent one.
       - name: Restore translation cache
         uses: actions/cache@v4
@@ -42,6 +42,11 @@ jobs:
 
       - name: Build merged EPG (+ English/French editions)
         run: python merge_epg.py
+        env:
+          # Azure AI Translator credentials (repo Settings -> Secrets and
+          # variables -> Actions). If missing, the en/fr editions stay Japanese.
+          AZURE_TRANSLATOR_KEY: ${{ secrets.AZURE_TRANSLATOR_KEY }}
+          AZURE_TRANSLATOR_REGION: ${{ secrets.AZURE_TRANSLATOR_REGION }}
 
       - name: Publish to dist branch (served by GitHub Pages)
         run: |
