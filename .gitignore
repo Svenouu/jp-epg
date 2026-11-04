@@ -2,3 +2,6 @@ playlist.m3u
 epg-merged.xml
 __pycache__/
 *.pyc
+translation-cache.json
+epg-en.xml
+epg-fr.xml

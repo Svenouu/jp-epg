@@ -1,7 +1,8 @@
 name: Build EPG
 
 # Rebuilds the merged EPG twice a day and publishes it to the `dist` branch,
-# which GitHub Pages serves (https://svenouu.github.io/jp-epg/epg-merged.xml).
+# which GitHub Pages serves (https://svenouu.github.io/jp-epg/epg-merged.xml,
+# plus translated editions epg-en.xml and epg-fr.xml).
 # The `dist` branch is force-pushed as a single orphan commit each run, so the
 # file never accumulates in git history. Pages auto-redeploys on push.
 
@@ -29,7 +30,17 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Build merged EPG
+      # Translations already done in earlier runs, so each build only sends
+      # new programmes to Google Translate. Cache keys are immutable, hence a
+      # fresh key per run, restored from the most recent one.
+      - name: Restore translation cache
+        uses: actions/cache@v4
+        with:
+          path: translation-cache.json
+          key: translations-${{ github.run_id }}
+          restore-keys: translations-
+
+      - name: Build merged EPG (+ English/French editions)
         run: python merge_epg.py
 
       - name: Publish to dist branch (served by GitHub Pages)
@@ -39,7 +50,7 @@ jobs:
           touch .nojekyll
           git checkout --orphan dist
           git reset                       # unstage everything from the orphan
-          git add -f epg-merged.xml .nojekyll
+          git add -f epg-merged.xml epg-en.xml epg-fr.xml .nojekyll
           git commit -m "EPG $(date -u +%FT%TZ)"
           git push -f origin dist
           # GitHub Pages auto-redeploys from the dist branch on push (~1 min).

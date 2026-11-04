@@ -8,11 +8,17 @@ This is a fork of the idea behind
 a different upstream playlist/EPG pair and rebuilt so the playlist itself
 (which embeds per-account stream auth tokens) never touches this repo.
 
-## The one URL
+## The URLs
 
 ```
-EPG source:  https://svenouu.github.io/jp-epg/epg-merged.xml
+Japanese (original):  https://svenouu.github.io/jp-epg/epg-merged.xml
+English:              https://svenouu.github.io/jp-epg/epg-en.xml
+French:               https://svenouu.github.io/jp-epg/epg-fr.xml
 ```
+
+All three cover the same channels and time window; the English and French
+editions have programme titles and descriptions machine-translated. Pick the
+one you want and point your player at it.
 
 Served by GitHub Pages from the `dist` branch as `application/xml`, gzip
 compressed in transit. Point your player's EPG/XMLTV setting at it once — it
@@ -35,10 +41,22 @@ tokens. Only the channel ids it references are committed, in
    `FALLBACK_CHANNEL_MAP`. The fallback only covers 85 of the 100 tracked
    channels (the major networks plus a chunk of BS/CS), never the full
    lineup.
-3. Either way, keeps only the channels in `channel_ids.txt`, trims the
-   result to fit under a size ceiling, and writes `epg-merged.xml`.
-4. `.github/workflows/build-epg.yml` runs that script twice daily (16:00 &
-   04:00 JST) and force-pushes the result to the `dist` branch, which GitHub
+3. Either way, keeps only the channels in `channel_ids.txt`. When the
+   primary source served the run, its empty programme descriptions (it has
+   none at all for ~30 channels, e.g. WOWOW, the_cinema, TBS/TV Asahi
+   channels) are filled from epgshare01, matched by channel and absolute
+   start time. epgshare01 only lists the next few days fully, so later days
+   stay mostly description-less.
+4. Trims the result to fit under a size ceiling and writes `epg-merged.xml`.
+5. `translate.py` then writes `epg-en.xml` and `epg-fr.xml`: titles and
+   descriptions translated through Google Translate's free, key-less web
+   endpoint. Translations are cached between runs (`translation-cache.json`,
+   kept by the workflow's `actions/cache` step), so a build only translates
+   programmes it hasn't seen before. The endpoint is unofficial and may
+   rate-limit: anything it fails to translate stays in Japanese and is
+   retried at the next build — it never blocks publishing.
+6. `.github/workflows/build-epg.yml` runs that script twice daily (16:00 &
+   04:00 JST) and force-pushes the three files to the `dist` branch, which GitHub
    Pages serves. The daily commit also keeps the scheduled workflow from
    being auto-disabled for inactivity.
 

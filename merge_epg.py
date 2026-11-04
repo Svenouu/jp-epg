@@ -21,13 +21,23 @@ What it does
    lineup, so it uses its own lower channel-count threshold.
 3. Keeps only channels in channel_ids.txt, trims to fit a size ceiling,
    reformats one-element-per-line.
-4. Refuses to publish a near-empty or decoy-looking result (safety nets).
+4. When the primary source served the run, fills its empty programme
+   descriptions from the fallback source (best effort: matched by channel and
+   absolute start time; skipped silently if the fallback is unreachable).
+5. Refuses to publish a near-empty or decoy-looking result (safety nets).
+6. Writes English and French editions (epg-en.xml, epg-fr.xml) with titles
+   and descriptions machine-translated — see translate.py.
 """
 import sys
 import urllib.request
 import gzip
 from datetime import datetime, timezone, timedelta
 import xml.etree.ElementTree as ET
+
+from translate import translated_trees
+
+# Translated editions published next to epg-merged.xml as epg-<lang>.xml.
+TRANSLATED_LANGS = ("en", "fr")
 
 # Keep the published file comfortably under a size that's proven to load on
 # constrained media-player XML parsers.
@@ -139,6 +149,11 @@ FALLBACK_CHANNEL_MAP = {
 
 CHANNEL_IDS_FILE = "channel_ids.txt"
 
+# Max start-time gap (seconds) for two sources' programmes to count as the
+# same slot when borrowing descriptions. Starts normally match exactly; a few
+# primary-source channels carry odd seconds offsets (e.g. 00:30:06).
+DESC_MATCH_TOLERANCE = 180
+
 # Safety nets (see main()): abort rather than publish a broken/decoy feed.
 MIN_CHANNELS = 70            # primary source: last observed match 98/100
 MIN_CHANNELS_FALLBACK = 50   # fallback source: last observed match 85/100
@@ -210,6 +225,58 @@ def load_source():
     return root, True
 
 
+def parse_xmltv_time(value):
+    try:
+        return datetime.strptime(value, "%Y%m%d%H%M%S %z")
+    except (TypeError, ValueError):
+        return None
+
+
+def fill_missing_descs(out):
+    """Fill empty <desc> of primary-source programmes from the fallback source.
+
+    The primary feed leaves descriptions empty for a whole set of channels
+    (WOWOW, the_cinema, TBS/TV Asahi channels...), while epgshare01 carries
+    them. Programmes are matched per channel on absolute start time (the two
+    feeds use different UTC offsets). Best effort: a fallback outage just
+    leaves descriptions as they were."""
+    root = repaired_root(fetch(EPG_FALLBACK_SRC, tries=2))
+    if root is None:
+        print("  WARN: fallback unavailable; descriptions not enriched", file=sys.stderr)
+        return
+    remap_fallback_ids(root)
+
+    by_channel = {}
+    for pr in root.findall("programme"):
+        desc = (pr.findtext("desc") or "").strip()
+        start = parse_xmltv_time(pr.get("start"))
+        if desc and start:
+            by_channel.setdefault(pr.get("channel"), []).append((start, desc))
+
+    filled = missing = 0
+    for pr in out.findall("programme"):
+        el = pr.find("desc")
+        if el is not None and (el.text or "").strip():
+            continue
+        missing += 1
+        candidates = by_channel.get(pr.get("channel"))
+        start = parse_xmltv_time(pr.get("start"))
+        if not candidates or start is None:
+            continue
+        gap, desc = min(((abs((s - start).total_seconds()), d) for s, d in candidates),
+                        key=lambda x: x[0])
+        if gap > DESC_MATCH_TOLERANCE:
+            continue
+        if el is None:
+            el = ET.Element("desc")
+            title = pr.find("title")
+            pr.insert(list(pr).index(title) + 1 if title is not None else 0, el)
+        el.text = desc
+        el.set("lang", "ja")
+        filled += 1
+    print(f"descriptions: filled {filled} of {missing} empty from fallback source")
+
+
 def load_channel_ids():
     with open(CHANNEL_IDS_FILE, encoding="utf-8") as fh:
         return {
@@ -255,6 +322,21 @@ def trim_to_fit(merged):
     tv, kept = build((jst + timedelta(days=1)).strftime("%Y%m%d"))
     print(f"  fallback {lo}..+1d: {kept} programmes")
     return tv
+
+
+def write_xmltv(tree, path):
+    """Serialize one element per line: ElementTree's default output is a single
+    multi-megabyte line, which some player-side XML parsers reject."""
+    with open(path, "w", encoding="utf-8") as f:
+        f.write('<?xml version="1.0" encoding="UTF-8"?>\n')
+        attrs = "".join(f' {k}="{v}"' for k, v in tree.attrib.items())
+        f.write(f"<tv{attrs}>\n")
+        for el in tree:
+            f.write(ET.tostring(el, encoding="unicode"))
+            f.write("\n")
+        f.write("</tv>\n")
+    print(f"WROTE {path}: {len(tree.findall('channel'))} channels, "
+          f"{len(tree.findall('programme'))} programmes")
 
 
 def main():
@@ -304,21 +386,24 @@ def main():
                   f"real listings; refusing to overwrite the live EPG", file=sys.stderr)
             sys.exit(1)
 
+    if not used_fallback:
+        fill_missing_descs(out)
+
     final = trim_to_fit(out)
 
-    # Serialize one element per line: ElementTree's default output is a single
-    # multi-megabyte line, which some player-side XML parsers reject.
-    with open("epg-merged.xml", "w", encoding="utf-8") as f:
-        f.write('<?xml version="1.0" encoding="UTF-8"?>\n')
-        attrs = "".join(f' {k}="{v}"' for k, v in final.attrib.items())
-        f.write(f"<tv{attrs}>\n")
-        for el in final:
-            f.write(ET.tostring(el, encoding="unicode"))
-            f.write("\n")
-        f.write("</tv>\n")
-    print(f"WROTE epg-merged.xml: {len(final.findall('channel'))} channels, "
-          f"{len(final.findall('programme'))} programmes")
+    write_xmltv(final, "epg-merged.xml")
 
+    # English/French editions: same guide, titles and descriptions translated.
+    # Best effort — a translation outage leaves text in Japanese but never
+    # blocks publishing the main file above.
+    try:
+        editions = translated_trees(final, TRANSLATED_LANGS)
+    except Exception as e:  # noqa: BLE001 - must not cost us the main EPG
+        print(f"  WARN: translation failed ({e}); publishing untranslated copies",
+              file=sys.stderr)
+        editions = {lang: final for lang in TRANSLATED_LANGS}
+    for lang, tree in editions.items():
+        write_xmltv(tree, f"epg-{lang}.xml")
 
 if __name__ == "__main__":
     main()
