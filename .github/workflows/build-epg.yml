@@ -2,7 +2,8 @@ name: Build EPG
 
 # Rebuilds the merged EPG twice a day and publishes it to the `dist` branch,
 # which GitHub Pages serves (https://svenouu.github.io/jp-epg/epg-merged.xml,
-# plus translated editions epg-en.xml and epg-fr.xml).
+# plus translated editions epg-en.xml / epg-fr.xml, bilingual-title variants
+# epg-en-ja.xml / epg-fr-ja.xml, and a .xml.gz copy of each).
 # The `dist` branch is force-pushed as a single orphan commit each run, so the
 # file never accumulates in git history. Pages auto-redeploys on push.
 
@@ -55,7 +56,7 @@ jobs:
           touch .nojekyll
           git checkout --orphan dist
           git reset                       # unstage everything from the orphan
-          git add -f epg-merged.xml epg-en.xml epg-fr.xml .nojekyll
+          git add -f epg-*.xml epg-*.xml.gz .nojekyll
           git commit -m "EPG $(date -u +%FT%TZ)"
           git push -f origin dist
           # GitHub Pages auto-redeploys from the dist branch on push (~1 min).

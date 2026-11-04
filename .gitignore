@@ -3,5 +3,5 @@ epg-merged.xml
 __pycache__/
 *.pyc
 translation-cache.json
-epg-en.xml
-epg-fr.xml
+epg-*.xml
+epg-*.xml.gz

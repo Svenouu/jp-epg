@@ -25,8 +25,14 @@ What it does
    descriptions from the fallback source (best effort: matched by channel and
    absolute start time; skipped silently if the fallback is unreachable).
 5. Refuses to publish a near-empty or decoy-looking result (safety nets).
-6. Writes English and French editions (epg-en.xml, epg-fr.xml) with titles
-   and descriptions machine-translated — see translate.py.
+6. Structures the flat Japanese titles (episode numbers, flags, categories,
+   posters) — see enrich.py.
+7. Keeps CATCHUP_DAYS of past programmes so the player's replay/catch-up
+   has listings to browse.
+8. Writes English and French editions (epg-en.xml, epg-fr.xml) with titles
+   and descriptions machine-translated — see translate.py — plus bilingual
+   variants (epg-en-ja.xml, epg-fr-ja.xml) whose titles also carry the
+   original. Every edition is also written gzipped (.xml.gz).
 """
 import sys
 import urllib.request
@@ -34,10 +40,16 @@ import gzip
 from datetime import datetime, timezone, timedelta
 import xml.etree.ElementTree as ET
 
+from enrich import enrich, strip_posters
 from translate import translated_trees
 
-# Translated editions published next to epg-merged.xml as epg-<lang>.xml.
+# Translated editions published next to epg-merged.xml as epg-<lang>.xml
+# (and epg-<lang>-ja.xml for the bilingual-title variant).
 TRANSLATED_LANGS = ("en", "fr")
+
+# Past days kept in the guide. The playlist offers catchup-days="6"; players
+# only let you replay what the EPG still lists, so keep a day more than that.
+CATCHUP_DAYS = 7
 
 # Keep the published file comfortably under a size that's proven to load on
 # constrained media-player XML parsers.
@@ -287,17 +299,14 @@ def load_channel_ids():
 
 
 def trim_to_fit(merged):
-    """Trim the merged guide so it stays under SIZE_CAP, keeping as many forward
-    days as fit. Drops stale past programmes and bulky programme poster icons
-    (channel logos come from the playlist, so they aren't needed here)."""
+    """Trim the merged guide so it stays under SIZE_CAP: keeps CATCHUP_DAYS of
+    history, and as many forward days as fit. Programme posters are kept
+    unless dropping them is what it takes to fit the full forward window."""
     channels = [e for e in merged if e.tag == "channel"]
     programmes = [e for e in merged if e.tag == "programme"]
-    for pr in programmes:
-        for ic in pr.findall("icon"):
-            pr.remove(ic)
 
     jst = datetime.now(timezone.utc) + timedelta(hours=9)  # Japanese broadcast day
-    lo = (jst - timedelta(days=1)).strftime("%Y%m%d")
+    lo = (jst - timedelta(days=CATCHUP_DAYS)).strftime("%Y%m%d")
 
     def build(hi):
         tv = ET.Element("tv", merged.attrib)
@@ -310,11 +319,22 @@ def trim_to_fit(merged):
                 kept += 1
         return tv, kept
 
+    def size_of(tv):
+        return len(ET.tostring(tv, encoding="utf-8"))
+
+    tv, kept = build((jst + timedelta(days=8)).strftime("%Y%m%d"))
+    size = size_of(tv)
+    if size <= SIZE_CAP:
+        print(f"  window {lo}..+8d with posters: {kept} programmes, {size/1e6:.1f} MB (fits)")
+        return tv
+    print(f"  window {lo}..+8d with posters: {size/1e6:.1f} MB over cap, dropping posters")
+    strip_posters(merged)
+
     # Take the largest forward window that fits; self-adapts to daily density.
     for fwd in range(8, 1, -1):
         hi = (jst + timedelta(days=fwd)).strftime("%Y%m%d")
         tv, kept = build(hi)
-        size = len(ET.tostring(tv, encoding="utf-8"))
+        size = size_of(tv)
         if size <= SIZE_CAP:
             print(f"  window {lo}..+{fwd}d: {kept} programmes, {size/1e6:.1f} MB (fits)")
             return tv
@@ -325,18 +345,22 @@ def trim_to_fit(merged):
 
 
 def write_xmltv(tree, path):
-    """Serialize one element per line: ElementTree's default output is a single
-    multi-megabyte line, which some player-side XML parsers reject."""
-    with open(path, "w", encoding="utf-8") as f:
-        f.write('<?xml version="1.0" encoding="UTF-8"?>\n')
-        attrs = "".join(f' {k}="{v}"' for k, v in tree.attrib.items())
-        f.write(f"<tv{attrs}>\n")
-        for el in tree:
-            f.write(ET.tostring(el, encoding="unicode"))
-            f.write("\n")
-        f.write("</tv>\n")
+    """Serialize one element per line (ElementTree's default output is a single
+    multi-megabyte line, which some player-side XML parsers reject), to `path`
+    and gzipped to `path`.gz."""
+    attrs = "".join(f' {k}="{v}"' for k, v in tree.attrib.items())
+    parts = ['<?xml version="1.0" encoding="UTF-8"?>\n', f"<tv{attrs}>\n"]
+    for el in tree:
+        parts.append(ET.tostring(el, encoding="unicode"))
+        parts.append("\n")
+    parts.append("</tv>\n")
+    data = "".join(parts).encode("utf-8")
+    with open(path, "wb") as f:
+        f.write(data)
+    with open(path + ".gz", "wb") as f:
+        f.write(gzip.compress(data, compresslevel=9, mtime=0))
     print(f"WROTE {path}: {len(tree.findall('channel'))} channels, "
-          f"{len(tree.findall('programme'))} programmes")
+          f"{len(tree.findall('programme'))} programmes, {len(data)/1e6:.1f} MB")
 
 
 def main():
@@ -389,21 +413,24 @@ def main():
     if not used_fallback:
         fill_missing_descs(out)
 
+    enrich(out)
     final = trim_to_fit(out)
 
     write_xmltv(final, "epg-merged.xml")
 
-    # English/French editions: same guide, titles and descriptions translated.
-    # Best effort — a translation outage leaves text in Japanese but never
-    # blocks publishing the main file above.
+    # English/French editions: same guide, titles and descriptions translated,
+    # plus bilingual-title variants (keyed "<lang>-ja"). Best effort — a
+    # translation outage leaves text in Japanese but never blocks publishing
+    # the main file above.
     try:
         editions = translated_trees(final, TRANSLATED_LANGS)
     except Exception as e:  # noqa: BLE001 - must not cost us the main EPG
         print(f"  WARN: translation failed ({e}); publishing untranslated copies",
               file=sys.stderr)
-        editions = {lang: final for lang in TRANSLATED_LANGS}
-    for lang, tree in editions.items():
-        write_xmltv(tree, f"epg-{lang}.xml")
+        editions = {name: final for lang in TRANSLATED_LANGS
+                    for name in (lang, f"{lang}-ja")}
+    for name, tree in editions.items():
+        write_xmltv(tree, f"epg-{name}.xml")
 
 if __name__ == "__main__":
     main()

@@ -16,9 +16,44 @@ English:              https://svenouu.github.io/jp-epg/epg-en.xml
 French:               https://svenouu.github.io/jp-epg/epg-fr.xml
 ```
 
-All three cover the same channels and time window; the English and French
-editions have programme titles and descriptions machine-translated. Pick the
-one you want and point your player at it.
+Bilingual-title variants (`"Translated title (原題)"` — handy when the
+machine translation of a name is off, or to search either way):
+
+```
+English + original:   https://svenouu.github.io/jp-epg/epg-en-ja.xml
+French + original:    https://svenouu.github.io/jp-epg/epg-fr-ja.xml
+```
+
+Every file also exists gzipped: append `.gz` (e.g. `epg-fr.xml.gz`, ~2 MB
+instead of ~12 MB) — TiviMate and most players read it directly, and it loads
+much faster on low-end Android/Fire TV boxes.
+
+All of them cover the same channels and time window: the last 7 days (so the
+playlist's 6-day catch-up/replay has listings to browse) and up to 8 days
+ahead. The English and French editions have programme titles, episode titles
+and descriptions machine-translated. Pick the one you want and point your
+player at it.
+
+### What the guide carries (beyond title/description)
+
+Upstream packs everything into the Japanese title; `enrich.py` unpacks it:
+
+- **Series title + `<episode-num>`/`<sub-title>`**: `ドラマ #12「別れ」` becomes
+  title `ドラマ`, episode `E12` (also `xmltv_ns`, so players show S/E), episode
+  title `別れ`. A stable series title is what makes TiviMate's series
+  recordings work, and it keeps the translation cache small.
+- **Flags → XMLTV elements**: `[新]`/`[初]` → `<new/>` (TiviMate's NEW
+  badge), `[再]` → `<previously-shown/>`, `[字]` → `<subtitles/>`, `[二]` →
+  bilingual `<audio>`, `[終]` → `<last-chance/>`; final and live
+  programmes also get a `[Final]`/`[Live]` (`[終]`/`[生]`) prefix on their
+  description. Noise like `【無料】` is dropped.
+- **`<category>`**: from title keywords, else from what the channel mostly
+  airs (`CHANNEL_CATEGORIES` in `enrich.py`); general-interest networks only
+  get one through keywords. Localized per edition.
+- **Posters**: programme thumbnails are kept (channel logos that upstream
+  attaches as programme icons are dropped — the playlist provides those).
+  If the guide ever outgrows the size ceiling, posters go first, then
+  forward days.
 
 Served by GitHub Pages from the `dist` branch as `application/xml`, gzip
 compressed in transit. Point your player's EPG/XMLTV setting at it once — it
@@ -47,17 +82,19 @@ tokens. Only the channel ids it references are committed, in
    channels) are filled from epgshare01, matched by channel and absolute
    start time. epgshare01 only lists the next few days fully, so later days
    stay mostly description-less.
-4. Trims the result to fit under a size ceiling and writes `epg-merged.xml`.
-5. `translate.py` then writes `epg-en.xml` and `epg-fr.xml`: titles and
-   descriptions translated with Azure AI Translator (see *Translation
-   setup* below). Translations are cached between runs
-   (`translation-cache.json`, kept by the workflow's `actions/cache` step),
-   so a build only pays for programmes it hasn't seen before, soonest-airing
-   first. Anything that fails to translate stays in Japanese and is retried
-   at the next build — it never blocks publishing.
+4. `enrich.py` structures each programme (see above), then the result is
+   trimmed to fit under a size ceiling and written as `epg-merged.xml`.
+5. `translate.py` then writes `epg-en.xml` and `epg-fr.xml` (plus the
+   bilingual `-ja` variants): titles, episode titles and descriptions
+   translated with Azure AI Translator (see *Translation setup* below).
+   Translations are cached between runs (`translation-cache.json`, kept by
+   the workflow's `actions/cache` step), so a build only pays for programmes
+   it hasn't seen before — upcoming ones first (soonest first), then the
+   catch-up history. Anything that fails to translate stays in Japanese and
+   is retried at the next build — it never blocks publishing.
 6. `.github/workflows/build-epg.yml` runs that script twice daily (16:00 &
-   04:00 JST) and force-pushes the three files to the `dist` branch, which GitHub
-   Pages serves. The daily commit also keeps the scheduled workflow from
+   04:00 JST) and force-pushes the files (`.xml` and `.xml.gz`) to the
+   `dist` branch, which GitHub Pages serves. The daily commit also keeps the scheduled workflow from
    being auto-disabled for inactivity.
 
 ## Translation setup
@@ -75,8 +112,10 @@ Secrets are encrypted, never visible in the repo or in logs, and not exposed
 to workflows triggered from forks. Without them the build still works; the
 translated editions just stay in Japanese.
 
-Cost: the first build translates a whole guide (~480k Japanese characters ×
-2 languages ≈ $10), later builds only new programmes. `TRANSLATE_MAX_CHARS`
+Cost: a whole guide (7 days back + up to 8 ahead) is ~820k Japanese
+characters × 2 languages ≈ $16 to translate from an empty cache; later
+builds only pay for new programmes (bilingual variants and categories cost
+nothing extra). A run that hits the cap below just finishes at the next build. `TRANSLATE_MAX_CHARS`
 (default 600,000 source characters per run) caps spend if the cache is ever
 lost. Google's free web endpoint was tried first and rejects GitHub Actions
 runners outright (HTTP 429).

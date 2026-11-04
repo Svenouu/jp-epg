@@ -25,6 +25,8 @@ from datetime import datetime, timezone
 import urllib.error
 import urllib.request
 
+from enrich import CATEGORY_LABELS
+
 TRANSLATION_CACHE = "translation-cache.json"
 ENDPOINT = "https://api.cognitive.microsofttranslator.com/translate?api-version=3.0&from=ja"
 
@@ -43,12 +45,20 @@ MAX_SOURCE_CHARS_PER_RUN = int(os.environ.get("TRANSLATE_MAX_CHARS", "600000"))
 # Japanese EPG flags like [字] (subtitled) or [デ] (data broadcast). Machine
 # translation renders them literally ("[character]"), so the meaningful ones
 # are replaced with localized tags and the rest are dropped before translating.
+# enrich.py already turns title flags into XMLTV elements; what's left here is
+# mostly the "[終]" / "[生]" prefix it puts on descriptions.
 FLAG_RE = re.compile(r"\s*[\[［]([^\]］]{1,2})[\]］]")
 FLAG_LABELS = {
     "新": {"en": "[New]", "fr": "[Nouveau]"},
     "終": {"en": "[Final]", "fr": "[Final]"},
     "再": {"en": "[Rerun]", "fr": "[Rediffusion]"},
+    "生": {"en": "[Live]", "fr": "[En direct]"},
 }
+
+TRANSLATED_TAGS = ("title", "sub-title", "desc")
+
+# Japanese category label -> {lang: label}; fixed table, no API call needed.
+CATEGORY_BY_JA = {labels["ja"]: labels for labels in CATEGORY_LABELS.values()}
 
 
 def parse_start(value):
@@ -56,6 +66,15 @@ def parse_start(value):
         return datetime.strptime(value, "%Y%m%d%H%M%S %z")
     except (TypeError, ValueError):
         return datetime.max.replace(tzinfo=timezone.utc)
+
+
+def priority(start, now):
+    """Sort key: upcoming programmes soonest first, then past ones most recent
+    first — so if translation stops midway, what's about to air is covered
+    before the catch-up history."""
+    if start >= now:
+        return (0, start - now)
+    return (1, now - start)
 
 
 def split_flags(text):
@@ -178,43 +197,60 @@ def save_cache(cache, used):
 
 
 def translated_trees(tree, langs):
-    """Return {lang: translated copy of tree}. Never raises on network trouble:
-    untranslated texts just stay in Japanese."""
-    # Distinct texts ordered by when they first air, so the nearest days get
-    # translated first if translation stops midway.
-    first_air = {}
+    """Return {lang: translated copy of tree, f"{lang}-ja": same with
+    "Translated (原題)" titles}. Never raises on network trouble: untranslated
+    texts just stay in Japanese."""
+    # Distinct texts ordered by when they air relative to now, so the coming
+    # days get translated first if translation stops midway.
+    now = datetime.now(timezone.utc)
+    rank = {}
     for pr in tree.findall("programme"):
-        start = parse_start(pr.get("start"))
-        for tag in ("title", "desc"):
+        key = priority(parse_start(pr.get("start")), now)
+        for tag in TRANSLATED_TAGS:
             el = pr.find(tag)
             if el is not None and (el.text or "").strip():
                 text = split_flags(clean(el.text))[0]
-                if text and (text not in first_air or start < first_air[text]):
-                    first_air[text] = start
-    ordered = sorted(first_air, key=first_air.get)
+                if text and (text not in rank or key < rank[text]):
+                    rank[text] = key
+    ordered = sorted(rank, key=rank.get)
 
     cache = load_cache()
     translate_all(ordered, langs, cache)
-    save_cache(cache, first_air)
+    save_cache(cache, rank)
 
     result = {}
     for lang in langs:
         table = cache.get(lang, {})
         out = copy.deepcopy(tree)
+        bilingual = copy.deepcopy(tree)
         missing = 0
-        for pr in out.findall("programme"):
-            for tag in ("title", "desc"):
+        for pr, bi in zip(out.findall("programme"), bilingual.findall("programme")):
+            for tag in TRANSLATED_TAGS:
                 el = pr.find(tag)
                 if el is None or not (el.text or "").strip():
                     continue
                 body, flags = split_flags(clean(el.text))
-                tr = table.get(body)
+                labels = " ".join(FLAG_LABELS[f][lang] for f in flags)
+                tr = table.get(body) if body else ""
                 if tr is None:
                     missing += 1
                     continue
-                labels = " ".join(FLAG_LABELS[f][lang] for f in flags)
-                el.text = f"{labels} {tr}".strip() if tag == "title" else tr
+                text = f"{labels} {tr}".strip()
+                bi_el = bi.find(tag)
+                if tag == "title" and tr and tr != body:
+                    bi_el.text = f"{text} ({body})"
+                else:
+                    bi_el.text = text
+                el.text = text
                 el.set("lang", lang)
-        print(f"  [{lang}] {missing} titles/descriptions left in Japanese")
+                bi_el.set("lang", lang)
+            for p in (pr, bi):
+                for cat in p.findall("category"):
+                    labels = CATEGORY_BY_JA.get((cat.text or "").strip())
+                    if labels:
+                        cat.text = labels[lang]
+                        cat.set("lang", lang)
+        print(f"  [{lang}] {missing} titles/sub-titles/descriptions left in Japanese")
         result[lang] = out
+        result[f"{lang}-ja"] = bilingual
     return result
