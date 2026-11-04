@@ -373,6 +373,26 @@ def translated_trees(tree, langs):
         entry = llm_titles.get(t) or {}
         return all(entry.get(lang) for lang in langs)
 
+    # Genres the LLM found where enrich.py had none; TMDB for films/series —
+    # before translating, since a TMDB synopsis that only exists in Japanese
+    # (it fills an empty description) needs translating like any other text.
+    for t in titles:
+        if title_cat.get(t) is None and (llm_titles.get(t) or {}).get("cat"):
+            title_cat[t] = llm_titles[t]["cat"]
+    tmdb_table = cache.setdefault("tmdb", {})
+    tmdb.lookup([t for t in titles if title_cat.get(t) in TMDB_CATEGORIES],
+                tmdb_table, llm_titles)
+    for pr in programmes:
+        title = clean(pr.findtext("title"))
+        info = tmdb_table.get(title) or {}
+        if clean(pr.findtext("desc")) or not info.get("ja") or all(info.get(l) for l in langs):
+            continue
+        text = split_flags(clean(info["ja"]))[0]
+        key = priority(parse_start(pr.get("start")), now)
+        if text and (text not in text_rank or key < text_rank[text]):
+            text_rank[text] = key
+            text_series.setdefault(text, title)
+
     # 2. Episode titles and descriptions through the LLM too - except texts
     #    Translator already did in an earlier build (no paying twice; they age
     #    out of the guide within days) and adult ones (content filters).
@@ -395,14 +415,6 @@ def translated_trees(tree, langs):
     translate_texts(sorted(text_rank, key=text_rank.get), langs, cache, glossary)
     romanize([t for t in titles if not (llm_titles.get(t) or {}).get("ro")], cache)
     llm.report_usage()
-
-    # 4. Genres the LLM found where enrich.py had none; TMDB for films/series.
-    for t in titles:
-        if title_cat.get(t) is None and (llm_titles.get(t) or {}).get("cat"):
-            title_cat[t] = llm_titles[t]["cat"]
-    tmdb_table = cache.setdefault("tmdb", {})
-    tmdb.lookup([t for t in titles if title_cat.get(t) in TMDB_CATEGORIES],
-                tmdb_table, llm_titles)
 
     # Keep only what this guide uses, so the cache never outgrows one guide.
     used = set(text_rank) | set(title_rank) | set(text_series)
