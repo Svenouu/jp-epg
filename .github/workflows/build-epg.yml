@@ -3,7 +3,8 @@ name: Build EPG
 # Rebuilds the merged EPG twice a day and publishes it to the `dist` branch,
 # which GitHub Pages serves (https://svenouu.github.io/jp-epg/epg-merged.xml,
 # plus translated editions epg-en.xml / epg-fr.xml, bilingual-title variants
-# epg-en-ja.xml / epg-fr-ja.xml, and a .xml.gz copy of each).
+# epg-en-ja.xml / epg-fr-ja.xml, romaji variants epg-en-romaji.xml /
+# epg-fr-romaji.xml, and a .xml.gz copy of each).
 # The `dist` branch is force-pushed as a single orphan commit each run, so the
 # file never accumulates in git history. Pages auto-redeploys on push.
 
@@ -48,6 +49,16 @@ jobs:
           # variables -> Actions). If missing, the en/fr editions stay Japanese.
           AZURE_TRANSLATOR_KEY: ${{ secrets.AZURE_TRANSLATOR_KEY }}
           AZURE_TRANSLATOR_REGION: ${{ secrets.AZURE_TRANSLATOR_REGION }}
+          # LLM on Azure AI Foundry for official titles, romaji and genres
+          # (llm.py). Without them, titles go through Azure Translator.
+          AZURE_AI_ENDPOINT: ${{ secrets.AZURE_AI_ENDPOINT }}
+          AZURE_AI_KEY: ${{ secrets.AZURE_AI_KEY }}
+          AZURE_AI_DEPLOYMENT: gpt-5.4-mini
+          # Durable copy of the translation cache in Azure Blob Storage
+          # (container URL + SAS token; cache_store.py).
+          AZURE_CACHE_SAS_URL: ${{ secrets.AZURE_CACHE_SAS_URL }}
+          # Film/series synopses and posters (tmdb.py). Optional.
+          TMDB_READ_TOKEN: ${{ secrets.TMDB_READ_TOKEN }}
 
       - name: Publish to dist branch (served by GitHub Pages)
         run: |

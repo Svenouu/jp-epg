@@ -114,6 +114,27 @@ DTD_ORDER = ["title", "sub-title", "desc", "credits", "date", "category", "keywo
              "last-chance", "new", "subtitles", "rating", "star-rating", "review"]
 
 
+# The feed writes the katakana long-vowel mark "ー" as an ASCII "-"
+# ("ニュ-ス"), which machine translation can't read ("Takarazukanyus" instead
+# of "Takarazuka News"). A "-" right after a katakana is put back as "ー".
+# (The feed also uses "-" for the "・" word separator; "ザーラスト" is still
+# far closer to readable Japanese than "ザ-ラスト".)
+KATAKANA_DASH_RE = re.compile(r"(?<=[ァ-ヺー])-")
+
+
+def fix_dashes(text):
+    return KATAKANA_DASH_RE.sub("ー", text) if text else text
+
+
+def reorder(pr):
+    """Put a <programme>'s children back in XMLTV DTD order."""
+    rank = {tag: i for i, tag in enumerate(DTD_ORDER)}
+    children = sorted(pr, key=lambda el: rank.get(el.tag, len(DTD_ORDER)))
+    for el in list(pr):
+        pr.remove(el)
+    pr.extend(children)
+
+
 def strip_flags(title):
     """Remove known bracketed flags. Returns (title, set of flag groups)."""
     found = set()
@@ -210,7 +231,7 @@ def is_channel_logo(icon):
 def enrich_programme(pr):
     title_el = pr.find("title")
     raw = (title_el.text or "") if title_el is not None else ""
-    title, flags = strip_flags(unicodedata.normalize("NFKC", raw))
+    title, flags = strip_flags(fix_dashes(unicodedata.normalize("NFKC", raw)))
     series, sub, season, episode, episode_end, total = split_episode(title)
     if not series:                    # a title that was nothing but flags
         series = title or raw
@@ -228,9 +249,11 @@ def enrich_programme(pr):
     if sub and sub != series:
         ET.SubElement(pr, "sub-title", {"lang": "ja"}).text = sub
 
+    desc = pr.find("desc")
+    if desc is not None and desc.text:
+        desc.text = fix_dashes(desc.text)
     prefix = " ".join(DESC_PREFIX[f] for f in ("final", "live") if f in flags)
     if prefix:
-        desc = pr.find("desc")
         if desc is None:
             desc = ET.SubElement(pr, "desc", {"lang": "ja"})
         body = (desc.text or "").strip()
@@ -258,12 +281,8 @@ def enrich_programme(pr):
     for ic in icons:
         pr.remove(ic)
     posters = [ic for ic in icons if not is_channel_logo(ic)]
-    children = list(pr) + posters[:1]
-    for el in list(pr):
-        pr.remove(el)
-    rank = {tag: i for i, tag in enumerate(DTD_ORDER)}
-    children.sort(key=lambda el: rank.get(el.tag, len(DTD_ORDER)))
-    pr.extend(children)
+    pr.extend(posters[:1])
+    reorder(pr)
     return flags, episode is not None or season is not None, cat
 
 

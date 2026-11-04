@@ -16,12 +16,14 @@ English:              https://svenouu.github.io/jp-epg/epg-en.xml
 French:               https://svenouu.github.io/jp-epg/epg-fr.xml
 ```
 
-Bilingual-title variants (`"Translated title (原題)"` — handy when the
-machine translation of a name is off, or to search either way):
+Title variants — `"Translated title (原題)"`, or `"Translated title
+(Romaji)"` to read/say/search the original name with a Latin keyboard:
 
 ```
 English + original:   https://svenouu.github.io/jp-epg/epg-en-ja.xml
 French + original:    https://svenouu.github.io/jp-epg/epg-fr-ja.xml
+English + romaji:     https://svenouu.github.io/jp-epg/epg-en-romaji.xml
+French + romaji:      https://svenouu.github.io/jp-epg/epg-fr-romaji.xml
 ```
 
 Every file also exists gzipped: append `.gz` (e.g. `epg-fr.xml.gz`, ~2 MB
@@ -31,7 +33,7 @@ much faster on low-end Android/Fire TV boxes.
 All of them cover the same channels and time window: the last 7 days (so the
 playlist's 6-day catch-up/replay has listings to browse) and up to 8 days
 ahead. The English and French editions have programme titles, episode titles
-and descriptions machine-translated. Pick the one you want and point your
+and descriptions localized (see *Localization* below). Pick the one you want and point your
 player at it.
 
 ### What the guide carries (beyond title/description)
@@ -48,8 +50,10 @@ Upstream packs everything into the Japanese title; `enrich.py` unpacks it:
   programmes also get a `[Final]`/`[Live]` (`[終]`/`[生]`) prefix on their
   description. Noise like `【無料】` is dropped.
 - **`<category>`**: from title keywords, else from what the channel mostly
-  airs (`CHANNEL_CATEGORIES` in `enrich.py`); general-interest networks only
-  get one through keywords. Localized per edition.
+  airs (`CHANNEL_CATEGORIES` in `enrich.py`), else the LLM's guess (see
+  below). Localized per edition.
+- **`ー` restored**: upstream writes the katakana long-vowel mark as `-`
+  (`ニュ-ス`), which translation can't read; it's put back.
 - **Posters**: programme thumbnails are kept (channel logos that upstream
   attaches as programme icons are dropped — the playlist provides those).
   If the guide ever outgrows the size ceiling, posters go first, then
@@ -84,20 +88,49 @@ tokens. Only the channel ids it references are committed, in
    stay mostly description-less.
 4. `enrich.py` structures each programme (see above), then the result is
    trimmed to fit under a size ceiling and written as `epg-merged.xml`.
-5. `translate.py` then writes `epg-en.xml` and `epg-fr.xml` (plus the
-   bilingual `-ja` variants): titles, episode titles and descriptions
-   translated with Azure AI Translator (see *Translation setup* below).
-   Translations are cached between runs (`translation-cache.json`, kept by
-   the workflow's `actions/cache` step), so a build only pays for programmes
-   it hasn't seen before — upcoming ones first (soonest first), then the
-   catch-up history. Anything that fails to translate stays in Japanese and
-   is retried at the next build — it never blocks publishing.
+5. `translate.py` then writes `epg-en.xml` and `epg-fr.xml` (plus the `-ja`
+   and `-romaji` variants) — see *Localization* below. Everything is cached
+   between runs, so a build only pays for programmes it hasn't seen before —
+   upcoming ones first (soonest first), then the catch-up history. Anything
+   that fails stays in Japanese and is retried at the next build — it never
+   blocks publishing.
 6. `.github/workflows/build-epg.yml` runs that script twice daily (16:00 &
    04:00 JST) and force-pushes the files (`.xml` and `.xml.gz`) to the
    `dist` branch, which GitHub Pages serves. The daily commit also keeps the scheduled workflow from
    being auto-disabled for inactivity.
 
-## Translation setup
+## Localization
+
+| What | Source | Module |
+|---|---|---|
+| Series titles (official EN/FR title when the work is known), romaji, missing genres | LLM `gpt-5.4-mini` on Azure AI Foundry | `llm.py` |
+| Episode titles, descriptions, titles the LLM didn't cover | Azure AI Translator + `glossary.json` | `translate.py` |
+| Synopsis (FR/EN/JA), poster, year, rating of films & series | TMDB | `tmdb.py` |
+| Cache of all of the above | Azure Blob Storage (+ Actions cache as fallback) | `cache_store.py` |
+
+Azure resources, all in resource group `EPG` (West Europe): `EPG-Translator`
+(Translator S1), `epg-ai` (AI Services, deployment `gpt-5.4-mini`),
+`epgcacheq1wh2z` (Storage, container `epg-cache`).
+
+**Glossary.** `glossary.json` forces how recurring names are translated by
+Azure Translator (`"名探偵コナン": {"en": "Detective Conan", "fr": "Détective
+Conan"}`, or one string for every language). Editing an entry retranslates
+the cached texts containing it at the next build. The LLM doesn't need it for
+series titles.
+
+**Repository secrets** (Settings → Secrets and variables → Actions):
+
+| Secret | What |
+|---|---|
+| `AZURE_TRANSLATOR_KEY` / `AZURE_TRANSLATOR_REGION` | Translator key and region (`westeurope`) |
+| `AZURE_AI_ENDPOINT` / `AZURE_AI_KEY` | `epg-ai` endpoint and key |
+| `AZURE_CACHE_SAS_URL` | `https://<account>.blob.core.windows.net/epg-cache?<SAS>` (read/create/write, renew before it expires — 2 years) |
+| `TMDB_READ_TOKEN` | TMDB account → Settings → API → *API Read Access Token* |
+
+Each one is optional: without it, that step is skipped (titles go through
+Translator, the cache lives in the Actions cache only, no TMDB data...).
+
+### Translator setup
 
 The English/French editions need an Azure **Translator** resource (Azure
 portal → Create a resource → Translator; tier S1, ~$10 per million
@@ -114,8 +147,9 @@ translated editions just stay in Japanese.
 
 Cost: a whole guide (7 days back + up to 8 ahead) is ~820k Japanese
 characters × 2 languages ≈ $16 to translate from an empty cache; later
-builds only pay for new programmes (bilingual variants and categories cost
-nothing extra). A run that hits the cap below just finishes at the next build. `TRANSLATE_MAX_CHARS`
+builds only pay for new programmes (title variants and categories cost
+nothing extra). The LLM costs a few dollars for a full first pass (~10k
+series titles) and cents per day after; TMDB is free. A run that hits the cap below just finishes at the next build. `TRANSLATE_MAX_CHARS`
 (default 600,000 source characters per run) caps spend if the cache is ever
 lost. Google's free web endpoint was tried first and rejects GitHub Actions
 runners outright (HTTP 429).

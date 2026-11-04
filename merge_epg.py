@@ -30,9 +30,10 @@ What it does
 7. Keeps CATCHUP_DAYS of past programmes so the player's replay/catch-up
    has listings to browse.
 8. Writes English and French editions (epg-en.xml, epg-fr.xml) with titles
-   and descriptions machine-translated — see translate.py — plus bilingual
-   variants (epg-en-ja.xml, epg-fr-ja.xml) whose titles also carry the
-   original. Every edition is also written gzipped (.xml.gz).
+   and descriptions localized — see translate.py — plus variants whose
+   titles also carry the original (epg-en-ja.xml, epg-fr-ja.xml) or its
+   romaji (epg-en-romaji.xml, epg-fr-romaji.xml). Every edition is also
+   written gzipped (.xml.gz).
 """
 import sys
 import urllib.request
@@ -416,19 +417,21 @@ def main():
     enrich(out)
     final = trim_to_fit(out)
 
-    write_xmltv(final, "epg-merged.xml")
-
-    # English/French editions: same guide, titles and descriptions translated,
-    # plus bilingual-title variants (keyed "<lang>-ja"). Best effort — a
-    # translation outage leaves text in Japanese but never blocks publishing
-    # the main file above.
+    # English/French editions (plus "<lang>-ja" and "<lang>-romaji" title
+    # variants). This also adds LLM genres and TMDB extras to `final` itself,
+    # hence before writing it. Best effort — an outage leaves text in Japanese
+    # but never blocks publishing.
     try:
         editions = translated_trees(final, TRANSLATED_LANGS)
     except Exception as e:  # noqa: BLE001 - must not cost us the main EPG
-        print(f"  WARN: translation failed ({e}); publishing untranslated copies",
+        import traceback
+        traceback.print_exc()
+        print(f"  WARN: localization failed ({e}); publishing untranslated copies",
               file=sys.stderr)
         editions = {name: final for lang in TRANSLATED_LANGS
-                    for name in (lang, f"{lang}-ja")}
+                    for name in (lang, f"{lang}-ja", f"{lang}-romaji")}
+
+    write_xmltv(final, "epg-merged.xml")
     for name, tree in editions.items():
         write_xmltv(tree, f"epg-{name}.xml")
 
