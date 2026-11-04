@@ -3,8 +3,9 @@
 Sources, cheapest/best first:
 - series titles: an LLM on Azure AI Foundry (llm.py), which knows official
   localized titles of anime, dramas, films...; falls back to Azure Translator;
-- episode titles and descriptions: Azure AI Translator, with glossary.json
-  forcing the translation of recurring names;
+- episode titles and descriptions: the same LLM (series title as context,
+  glossary.json terms enforced); Azure AI Translator, with the glossary as a
+  dynamic dictionary, for what the LLM doesn't return;
 - empty descriptions of films/series: TMDB synopses in each language (tmdb.py);
 - romaji of titles: the LLM's reading, else Azure Translator's
   (character-by-character, rougher) transliteration.
@@ -288,6 +289,7 @@ def translated_trees(tree, langs):
     programmes = tree.findall("programme")
 
     title_rank, text_rank, context, title_cat = {}, {}, {}, {}
+    text_series, adult_texts = {}, set()
     for pr in programmes:
         key = priority(parse_start(pr.get("start")), now)
         title = clean(pr.findtext("title"))
@@ -303,6 +305,10 @@ def translated_trees(tree, langs):
             text = split_flags(clean(pr.findtext(tag)))[0]
             if text and (text not in text_rank or key < text_rank[text]):
                 text_rank[text] = key
+            if text:
+                text_series.setdefault(text, title)
+                if cat == "adult":
+                    adult_texts.add(text)
     titles = sorted(title_rank, key=title_rank.get)
 
     cache = cache_store.load()
@@ -318,14 +324,30 @@ def translated_trees(tree, langs):
         entry = llm_titles.get(t) or {}
         return all(entry.get(lang) for lang in langs)
 
-    # 2. Everything else (and titles the LLM didn't cover) through Translator.
+    # 2. Episode titles and descriptions through the LLM too - except texts
+    #    Translator already did in an earlier build (no paying twice; they age
+    #    out of the guide within days) and adult ones (content filters).
+    llm_text = cache.setdefault("llm_text", {})
+    pending = [t for t in sorted(text_rank, key=text_rank.get)
+               if t not in adult_texts and not all(t in cache.get(l, {}) for l in langs)]
+    llm.translate_texts([(t, text_series.get(t, "")) for t in pending], llm_text, glossary)
+
+    def text_ok(t):
+        entry = llm_text.get(t) or {}
+        return all(entry.get(lang) for lang in langs)
+
+    for t in [t for t in text_rank if text_ok(t)]:
+        del text_rank[t]                  # nothing left for Translator to do
+
+    # 3. Whatever's left (incl. titles the LLM didn't cover) through Translator.
     for t in titles:
         if not llm_ok(t) and (t not in text_rank or title_rank[t] < text_rank[t]):
             text_rank[t] = title_rank[t]
     translate_texts(sorted(text_rank, key=text_rank.get), langs, cache, glossary)
     romanize([t for t in titles if not (llm_titles.get(t) or {}).get("ro")], cache)
+    llm.report_usage()
 
-    # 3. Genres the LLM found where enrich.py had none; TMDB for films/series.
+    # 4. Genres the LLM found where enrich.py had none; TMDB for films/series.
     for t in titles:
         if title_cat.get(t) is None and (llm_titles.get(t) or {}).get("cat"):
             title_cat[t] = llm_titles[t]["cat"]
@@ -334,8 +356,8 @@ def translated_trees(tree, langs):
                 tmdb_table, llm_titles)
 
     # Keep only what this guide uses, so the cache never outgrows one guide.
-    used = set(text_rank) | set(title_rank)
-    for name in (*langs, "romaji"):
+    used = set(text_rank) | set(title_rank) | set(text_series)
+    for name in (*langs, "romaji", "llm_text"):
         cache[name] = {k: v for k, v in cache.get(name, {}).items() if k in used}
     for name in ("titles", "tmdb"):
         cache[name] = {k: v for k, v in cache.get(name, {}).items() if k in title_rank}
@@ -408,7 +430,7 @@ def translated_trees(tree, langs):
                         continue
                     body, flags = split_flags(clean(el.text))
                     labels = " ".join(FLAG_LABELS[f][lang] for f in flags)
-                    tr = table.get(body) if body else ""
+                    tr = ((llm_text.get(body) or {}).get(lang) or table.get(body)) if body else ""
                     if tr is None:
                         missing += name == lang
                         continue

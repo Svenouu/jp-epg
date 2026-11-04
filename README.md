@@ -104,7 +104,8 @@ tokens. Only the channel ids it references are committed, in
 | What | Source | Module |
 |---|---|---|
 | Series titles (official EN/FR title when the work is known), romaji, missing genres | LLM `gpt-5.4-mini` on Azure AI Foundry | `llm.py` |
-| Episode titles, descriptions, titles the LLM didn't cover | Azure AI Translator + `glossary.json` | `translate.py` |
+| Episode titles, descriptions | the same LLM (series title as context, `glossary.json` enforced) | `llm.py` |
+| Whatever the LLM didn't return (incl. adult channels, skipped for content filters) | Azure AI Translator + `glossary.json` | `translate.py` |
 | Synopsis (FR/EN/JA), poster, year, rating of films & series | TMDB | `tmdb.py` |
 | Cache of all of the above | Azure Blob Storage (+ Actions cache as fallback) | `cache_store.py` |
 
