@@ -45,11 +45,16 @@ Upstream packs everything into the Japanese title; `enrich.py` unpacks it:
   title `ドラマ`, episode `E12` (also `xmltv_ns`, so players show S/E), episode
   title `別れ`. A stable series title is what makes TiviMate's series
   recordings work, and it keeps the translation cache small.
-- **Flags → XMLTV elements**: `[新]`/`[初]` → `<new/>` (TiviMate's NEW
-  badge), `[再]` → `<previously-shown/>`, `[字]` → `<subtitles/>`, `[二]` →
-  bilingual `<audio>`, `[終]` → `<last-chance/>`; final and live
-  programmes also get a `[Final]`/`[Live]` (`[終]`/`[生]`) prefix on their
-  description. Noise like `【無料】` is dropped.
+- **Flags → XMLTV elements**: `[新]`/`[初]` → `<new/>`, `[再]` →
+  `<previously-shown/>`, `[字]` → `<subtitles/>`, `[二]` → bilingual
+  `<audio>`, `[終]` → `<last-chance/>`; final and live programmes also get a
+  `[Final]`/`[Live]` (`[終]`/`[生]`) prefix on their description. Noise like
+  `【無料】` is dropped. TiviMate ignores these elements and only goes by the
+  title, so new and live programmes also get a title mark: `(Nouveau)` /
+  `(En direct)`, `(New)` / `(Live)`, `【新】` / `【生】` (which may keep that
+  episode out of a TiviMate series recording, as those match on the title).
+- **TMDB rating/year** also open the description (`★ 7,3/10 · 2024 — …`),
+  since TiviMate shows neither `<star-rating>` nor `<date>`.
 - **`<category>`**: from title keywords, else from what the channel mostly
   airs (`CHANNEL_CATEGORIES` in `enrich.py`), else the LLM's guess (see
   below). Localized per edition.

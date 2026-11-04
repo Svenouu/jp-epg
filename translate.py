@@ -270,6 +270,27 @@ def romanize(titles, cache):
 
 # ------------------------------------------------------------- metadata --
 
+# TiviMate shows no badge for <new/> (nor anything for live programmes): it
+# only goes by the title, so these get a short mark appended to it. Side
+# effect: TiviMate series recordings match on the title, so an episode with a
+# mark may not be grouped with the others.
+TITLE_MARKS = {
+    "new": {"ja": "【新】", "en": "(New)", "fr": "(Nouveau)"},
+    "live": {"ja": "【生】", "en": "(Live)", "fr": "(En direct)"},
+}
+
+
+def title_marks(pr):
+    """Marks for a Japanese programme, from enrich.py's <new/> element and
+    "[生]" description flag."""
+    out = []
+    if pr.find("new") is not None:
+        out.append("new")
+    if "生" in split_flags(clean(pr.findtext("desc")))[1]:
+        out.append("live")
+    return out
+
+
 def stamp(info, lang):
     """"★ 7,3/10 · 2024" from TMDB info (decimal comma in French), or None."""
     if not info:
@@ -414,6 +435,9 @@ def translated_trees(tree, langs):
           f"{sum(1 for p in programmes if tmdb_table.get(clean(p.findtext('title'))))} "
           f"programmes matched on TMDB, {len(tmdb_desc)} empty descriptions filled from it")
 
+    # New / live programmes, marked in their title (see TITLE_MARKS).
+    marks = [title_marks(pr) for pr in programmes]
+
     romaji = cache.get("romaji", {})
     result = {}
     for lang in langs:
@@ -439,6 +463,8 @@ def translated_trees(tree, langs):
                             el.text = f"{tr_title} ({ja_title})"
                         else:
                             el.text = tr_title
+                if el is not None and marks[i]:
+                    el.text = " ".join([el.text or ""] + [TITLE_MARKS[m][lang] for m in marks[i]])
                 for tag in ("sub-title", "desc"):
                     el = p.find(tag)
                     if tag == "desc" and i in tmdb_desc and tmdb_desc[i].get(lang):
@@ -476,9 +502,12 @@ def translated_trees(tree, langs):
         print(f"  [{lang}] {missing} titles/sub-titles/descriptions left in Japanese")
         result.update(variants)
 
-    # Same rating/year opening on the Japanese tree — only now, since the
-    # editions above were copied from it before.
-    for pr in programmes:
+    # Same rating/year opening and title marks on the Japanese tree — only
+    # now, since the editions above were copied from it before.
+    for i, pr in enumerate(programmes):
         prepend_desc(pr, [x for x in [stamp(tmdb_table.get(clean(pr.findtext("title"))), "ja")]
                           if x], "ja")
+        el = pr.find("title")
+        if el is not None and marks[i]:
+            el.text = " ".join([el.text or ""] + [TITLE_MARKS[m]["ja"] for m in marks[i]])
     return result
