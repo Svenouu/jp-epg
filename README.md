@@ -16,8 +16,9 @@ English:              https://svenouu.github.io/jp-epg/epg-en.xml
 French:               https://svenouu.github.io/jp-epg/epg-fr.xml
 ```
 
-Title variants — `"Translated title (原題)"`, or `"Translated title
-(Romaji)"` to read/say/search the original name with a Latin keyboard:
+Variants — titles as `"Translated title (原題)"`, or the original title's
+romaji reading at the start of the description (`"Ekitabi — …"`), to
+read or say the original name:
 
 ```
 English + original:   https://svenouu.github.io/jp-epg/epg-en-ja.xml

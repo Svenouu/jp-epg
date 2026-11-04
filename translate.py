@@ -11,7 +11,8 @@ Sources, cheapest/best first:
   (character-by-character, rougher) transliteration.
 
 Per language three editions are produced: "<lang>" (translated titles),
-"<lang>-ja" ("Translated (原題)") and "<lang>-romaji" ("Translated (Romaji)").
+"<lang>-ja" ("Translated (原題)") and "<lang>-romaji" (translated title, the
+romaji reading at the start of the description).
 The Japanese tree passed in also gets the language-neutral extras in place
 (LLM genres where enrich.py found none, TMDB posters/year/rating/synopsis).
 
@@ -407,14 +408,10 @@ def translated_trees(tree, langs):
                 if el is not None and ja_title:
                     if tr_title is None:
                         missing += name == lang
-                        if name.endswith("-romaji") and ro:
-                            el.text = ro
                     else:
                         el.set("lang", lang)
                         if name.endswith("-ja") and not same(tr_title, ja_title):
                             el.text = f"{tr_title} ({ja_title})"
-                        elif name.endswith("-romaji") and ro and not same(tr_title, ro):
-                            el.text = f"{tr_title} ({ro})"
                         else:
                             el.text = tr_title
                 for tag in ("sub-title", "desc"):
@@ -443,6 +440,16 @@ def translated_trees(tree, langs):
                     if key:
                         cat.text = CATEGORY_LABELS[key][lang]
                         cat.set("lang", lang)
+                # Romaji variant: the reading opens the description, keeping
+                # the title short in the grid.
+                if (name.endswith("-romaji") and ro and not same(ro, tr_title)
+                        and not same(ro, ja_title)):
+                    desc = p.find("desc")
+                    if desc is None:
+                        desc = ET.SubElement(p, "desc", {"lang": lang})
+                        reorder(p)
+                    body = clean(desc.text)
+                    desc.text = f"{ro} — {body}" if body else ro
         print(f"  [{lang}] {missing} titles/sub-titles/descriptions left in Japanese")
         result.update(variants)
     return result

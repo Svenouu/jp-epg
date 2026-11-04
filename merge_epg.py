@@ -31,8 +31,8 @@ What it does
    has listings to browse.
 8. Writes English and French editions (epg-en.xml, epg-fr.xml) with titles
    and descriptions localized — see translate.py — plus variants whose
-   titles also carry the original (epg-en-ja.xml, epg-fr-ja.xml) or its
-   romaji (epg-en-romaji.xml, epg-fr-romaji.xml). Every edition is also
+   titles also carry the original (epg-en-ja.xml, epg-fr-ja.xml) or whose
+   descriptions open with its romaji (epg-en-romaji.xml, epg-fr-romaji.xml). Every edition is also
    written gzipped (.xml.gz).
 """
 import sys
