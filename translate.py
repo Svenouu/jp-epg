@@ -270,6 +270,31 @@ def romanize(titles, cache):
 
 # ------------------------------------------------------------- metadata --
 
+def stamp(info, lang):
+    """"★ 7,3/10 · 2024" from TMDB info (decimal comma in French), or None."""
+    if not info:
+        return None
+    parts = []
+    if info.get("rating"):
+        value = f"{info['rating']:.1f}"
+        parts.append(f"★ {value.replace('.', ',') if lang == 'fr' else value}/10")
+    if info.get("year"):
+        parts.append(info["year"])
+    return " · ".join(parts) or None
+
+
+def prepend_desc(pr, lead, lang):
+    """Open a programme's description with `lead` pieces, " — "-separated."""
+    if not lead:
+        return
+    desc = pr.find("desc")
+    if desc is None:
+        desc = ET.SubElement(pr, "desc", {"lang": lang})
+        reorder(pr)
+    body = clean(desc.text)
+    desc.text = " — ".join(lead + ([body] if body else []))
+
+
 def add_tmdb(pr, info):
     """Add TMDB's language-neutral extras to a Japanese programme."""
     if info.get("poster") and pr.find("icon") is None:
@@ -440,16 +465,20 @@ def translated_trees(tree, langs):
                     if key:
                         cat.text = CATEGORY_LABELS[key][lang]
                         cat.set("lang", lang)
-                # Romaji variant: the reading opens the description, keeping
-                # the title short in the grid.
+                # Opening of the description: TMDB rating/year (players like
+                # TiviMate ignore <star-rating>), then — in the romaji variant —
+                # the title's reading, which keeps the grid title short.
+                lead = [stamp(tmdb_table.get(ja_title), lang)]
                 if (name.endswith("-romaji") and ro and not same(ro, tr_title)
                         and not same(ro, ja_title)):
-                    desc = p.find("desc")
-                    if desc is None:
-                        desc = ET.SubElement(p, "desc", {"lang": lang})
-                        reorder(p)
-                    body = clean(desc.text)
-                    desc.text = f"{ro} — {body}" if body else ro
+                    lead.append(ro)
+                prepend_desc(p, [x for x in lead if x], lang)
         print(f"  [{lang}] {missing} titles/sub-titles/descriptions left in Japanese")
         result.update(variants)
+
+    # Same rating/year opening on the Japanese tree — only now, since the
+    # editions above were copied from it before.
+    for pr in programmes:
+        prepend_desc(pr, [x for x in [stamp(tmdb_table.get(clean(pr.findtext("title"))), "ja")]
+                          if x], "ja")
     return result
