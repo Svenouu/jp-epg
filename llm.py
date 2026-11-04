@@ -33,6 +33,7 @@ import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
+import stats
 from enrich import CATEGORY_LABELS
 
 BATCH = 40          # titles per request
@@ -172,6 +173,8 @@ def localize_titles(wanted, table):
     cfg = config()
     todo = [w for w in wanted if w[0] not in table][:MAX_TITLES_PER_RUN]
     print(f"  LLM titles: {len(wanted)} series titles, {len(todo)} new")
+    stats.record("llm_titles_total", len(wanted))
+    stats.record("llm_titles_new", len(todo))
     if not todo:
         return
     if cfg is None:
@@ -189,6 +192,7 @@ def localize_titles(wanted, table):
         print(f"  WARN: LLM request refused ({e}); remaining titles go through "
               f"Azure Translator this build", file=sys.stderr)
     print(f"  LLM titles: localized {done} titles")
+    stats.record("llm_titles_done", done)
 
 
 # ------------------------------------------------- episode titles & descs --
@@ -248,6 +252,7 @@ def translate_texts(wanted, table, glossary):
         todo.append((text, series))
         chars += len(text)
     print(f"  LLM texts: {len(wanted)} texts to cover, {len(todo)} new ({chars} chars)")
+    stats.record("llm_texts_new", len(todo))
     if not todo or cfg is None:
         return
     done = 0
@@ -261,8 +266,11 @@ def translate_texts(wanted, table, glossary):
         print(f"  WARN: LLM request refused ({e}); remaining texts go through "
               f"Azure Translator this build", file=sys.stderr)
     print(f"  LLM texts: translated {done} texts")
+    stats.record("llm_texts_done", done)
 
 
 def report_usage():
+    stats.record("llm_tokens_in", USAGE["in"])
+    stats.record("llm_tokens_out", USAGE["out"])
     if USAGE["in"] or USAGE["out"]:
         print(f"  LLM usage this build: {USAGE['in']} input + {USAGE['out']} output tokens")

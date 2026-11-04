@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Suivi du guide TV</title>
+<style>
+:root{
+  --bg:#f6f6f4; --surface-1:#fcfcfb; --border:#e3e2dc;
+  --text-primary:#1f1f1d; --text-secondary:#55544e; --text-muted:#7a7970;
+  --series-1:#2a78d6; --series-2:#eb6834;
+  --good:#1a7f37; --warn:#9a6700; --bad:#c62828;
+  --grid:#ecebe6;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#121211; --surface-1:#1a1a19; --border:#2e2e2b;
+    --text-primary:#f0efec; --text-secondary:#c3c2b7; --text-muted:#94938a;
+    --series-1:#3987e5; --series-2:#d95926;
+    --good:#4ac26b; --warn:#d4a72c; --bad:#ff6b6b;
+    --grid:#262624;
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#121211; --surface-1:#1a1a19; --border:#2e2e2b;
+  --text-primary:#f0efec; --text-secondary:#c3c2b7; --text-muted:#94938a;
+  --series-1:#3987e5; --series-2:#d95926;
+  --good:#4ac26b; --warn:#d4a72c; --bad:#ff6b6b;
+  --grid:#262624;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text-primary);
+  font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:1040px;margin:0 auto;padding:28px 16px 48px;overflow-wrap:anywhere}
+html,body{overflow-x:hidden}
+h1{font-size:22px;margin:0 0 4px}
+h2{font-size:15px;margin:0 0 12px;color:var(--text-secondary);font-weight:600}
+.sub{color:var(--text-secondary);margin:0}
+header{display:flex;flex-wrap:wrap;gap:12px 20px;align-items:center;justify-content:space-between;margin-bottom:22px}
+.pill{display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border-radius:999px;
+  border:1px solid var(--border);background:var(--surface-1);font-weight:600}
+.pill svg{width:16px;height:16px}
+.card{background:var(--surface-1);border:1px solid var(--border);border-radius:12px;padding:18px;margin-bottom:16px}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(150px,100%),1fr));gap:12px;margin-bottom:16px}
+.tiles>*,.grid2>*{min-width:0}
+.tile{background:var(--surface-1);border:1px solid var(--border);border-radius:12px;padding:14px 16px}
+.tile .label{color:var(--text-secondary);font-size:13px}
+.tile .value{font-size:24px;font-weight:650;font-variant-numeric:tabular-nums;margin-top:2px}
+.tile .note{color:var(--text-muted);font-size:12px}
+.chart-head{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;gap:8px}
+.legend{display:flex;gap:16px;font-size:13px;color:var(--text-secondary)}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px}
+.chart-wrap{position:relative;margin-top:8px}
+svg.chart{width:100%;height:220px;display:block;overflow:visible}
+.tip{position:absolute;pointer-events:none;background:var(--surface-1);border:1px solid var(--border);
+  border-radius:8px;padding:8px 10px;font-size:13px;box-shadow:0 4px 14px rgba(0,0,0,.12);
+  white-space:nowrap;opacity:0;transition:opacity .1s}
+.tip b{display:block;margin-bottom:2px}
+.linkbtn{background:none;border:0;color:var(--series-1);cursor:pointer;font:inherit;font-size:13px;padding:0}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(300px,100%),1fr));gap:16px}
+dl{display:grid;grid-template-columns:1fr auto;gap:6px 16px;margin:0}
+dt{color:var(--text-secondary)} dd{margin:0;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.scroll{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:tabular-nums}
+th,td{padding:7px 10px;border-bottom:1px solid var(--border);text-align:right;white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
+th{color:var(--text-secondary);font-weight:600}
+.ok{color:var(--good)} .ko{color:var(--bad)}
+.files a{color:var(--series-1);text-decoration:none}
+.files li{margin:3px 0}
+footer{color:var(--text-muted);font-size:12px;margin-top:20px}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>Suivi du guide TV</h1>
+      <p class="sub" id="lastBuild">—</p>
+    </div>
+    <span class="pill" id="status"></span>
+  </header>
+
+  <section class="tiles" id="tiles"></section>
+
+  <section class="card">
+    <div class="chart-head">
+      <h2>Coût par jour (estimé, 30 derniers jours)</h2>
+      <div class="legend"><span><i style="background:var(--series-1)"></i>Modèle de langage</span>
+        <span><i style="background:var(--series-2)"></i>Translator</span></div>
+    </div>
+    <div class="chart-wrap" id="chartWrap"><svg class="chart" id="chart" role="img"
+      aria-label="Coût estimé par jour"></svg><div class="tip" id="tip"></div></div>
+    <button class="linkbtn" id="toggleTable" type="button">Afficher les valeurs en tableau</button>
+    <div class="scroll" id="dayTable" hidden></div>
+  </section>
+
+  <section class="grid2">
+    <div class="card"><h2>Dernier build — contenu</h2><dl id="content"></dl></div>
+    <div class="card"><h2>Dernier build — traduction et enrichissement</h2><dl id="loc"></dl></div>
+  </section>
+
+  <section class="card">
+    <h2>Historique des builds</h2>
+    <div class="scroll"><table id="history"></table></div>
+  </section>
+
+  <section class="card files">
+    <h2>Fichiers du guide</h2>
+    <ul id="files"></ul>
+  </section>
+
+  <footer>Coûts estimés d'après les prix publics Azure (Translator S1 : 10 $ par million de caractères et
+    par langue ; gpt-5.4-mini : 0,75 $ / 4,50 $ par million de tokens en entrée / sortie), hors crédits de
+    l'abonnement. La facture réelle est dans Azure Cost Management.</footer>
+</main>
+
+<script>
+const HISTORY = /*__HISTORY__*/[];
+const BUILD_EVERY_H = 12;
+const fmt = new Intl.NumberFormat("fr-FR");
+const usd = v => (v ?? 0).toLocaleString("fr-FR", {style: "currency", currency: "USD",
+  minimumFractionDigits: 2, maximumFractionDigits: 2});
+const n = v => v == null ? "—" : fmt.format(v);
+const pct = (a, b) => b ? (100 * a / b).toLocaleString("fr-FR", {maximumFractionDigits: 0}) + " %" : "—";
+const el = (tag, attrs = {}, text) => { const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  if (text != null) e.textContent = text; return e; };
+const svgEl = (tag, attrs = {}) => { const e = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); return e; };
+
+function ago(date) {
+  const h = (Date.now() - date) / 36e5;
+  if (h < 1) return "il y a " + Math.max(1, Math.round(h * 60)) + " min";
+  if (h < 48) return "il y a " + Math.round(h) + " h";
+  return "il y a " + Math.round(h / 24) + " jours";
+}
+
+const last = HISTORY[HISTORY.length - 1];
+
+function renderHeader() {
+  const status = document.getElementById("status");
+  if (!last) { status.textContent = "Aucun build enregistré"; return; }
+  const when = new Date(last.time);
+  const late = (Date.now() - when) / 36e5 > BUILD_EVERY_H + 2;
+  const ok = last.ok !== false && !late;
+  const icon = ok
+    ? '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3 3 7-7"/></svg>'
+    : '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3v6M8 12v1"/></svg>';
+  status.innerHTML = icon;
+  status.append(ok ? "À jour" : (late ? "En retard" : "Dernier build en erreur"));
+  status.style.color = ok ? "var(--good)" : "var(--bad)";
+  document.getElementById("lastBuild").textContent =
+    "Dernier build " + ago(when) + " — " + when.toLocaleString("fr-FR",
+      {dateStyle: "full", timeStyle: "short"}) + " (" + Math.round((last.duration_s || 0) / 60) + " min)";
+}
+
+function dayKey(d) { return d.toLocaleDateString("fr-CA"); }   // YYYY-MM-DD, local time
+
+function days() {
+  const map = new Map();
+  for (const h of HISTORY) {
+    const k = dayKey(new Date(h.time));
+    const v = map.get(k) || {llm: 0, tr: 0, builds: 0};
+    v.llm += h.cost_llm || 0; v.tr += h.cost_translator || 0; v.builds++;
+    map.set(k, v);
+  }
+  const out = [];
+  const today = new Date();
+  for (let i = 29; i >= 0; i--) {
+    const d = new Date(today); d.setDate(d.getDate() - i);
+    const k = dayKey(d);
+    out.push({key: k, date: d, ...(map.get(k) || {llm: 0, tr: 0, builds: 0})});
+  }
+  return out;
+}
+
+function renderTiles() {
+  const box = document.getElementById("tiles");
+  if (!last) return;
+  const d = days();
+  const month = d.reduce((s, x) => s + x.llm + x.tr, 0);
+  const left = last.left_japanese || {};
+  const tiles = [
+    ["Coût du dernier build", usd(last.cost_total), "LLM " + usd(last.cost_llm) + " · Translator " + usd(last.cost_translator)],
+    ["Coût sur 30 jours", usd(month), d.filter(x => x.builds).length + " jours avec build"],
+    ["Programmes", n(last.programmes), (last.days_ahead ?? "—") + " jours à venir + 7 de replay"],
+    ["Chaînes", n(last.channels) + " / " + n(last.channels_tracked), "source " + (last.source === "fallback" ? "de secours" : "principale")],
+    ["Descriptions vides", pct(last.empty_desc_after, last.programmes), n(last.empty_desc_after) + " programmes"],
+    ["Restés en japonais (FR)", n(left.fr), "EN : " + n(left.en) + " · réessayés au prochain build"],
+  ];
+  for (const [label, value, note] of tiles) {
+    const t = el("div", {class: "tile"});
+    t.append(el("div", {class: "label"}, label), el("div", {class: "value"}, value), el("div", {class: "note"}, note));
+    box.append(t);
+  }
+}
+
+function renderChart() {
+  const data = days();
+  const svg = document.getElementById("chart");
+  const wrap = document.getElementById("chartWrap");
+  const tip = document.getElementById("tip");
+  const W = svg.clientWidth || 600, H = 220, L = 44, R = 8, T = 10, B = 26;
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.replaceChildren();
+  const max = Math.max(0.01, ...data.map(x => x.llm + x.tr));
+  const nice = (() => { const p = Math.pow(10, Math.floor(Math.log10(max)));
+    for (const m of [1, 2, 2.5, 5, 10]) if (m * p >= max) return m * p; return 10 * p; })();
+  const y = v => T + (H - T - B) * (1 - v / nice);
+  const slot = (W - L - R) / data.length, bw = Math.max(3, Math.min(22, slot * 0.62));
+  for (let i = 0; i <= 4; i++) {
+    const v = nice * i / 4, yy = y(v);
+    svg.append(svgEl("line", {x1: L, x2: W - R, y1: yy, y2: yy, stroke: "var(--grid)", "stroke-width": 1}));
+    const t = svgEl("text", {x: L - 6, y: yy + 4, "text-anchor": "end", "font-size": 11, fill: "var(--text-muted)"});
+    t.textContent = v.toLocaleString("fr-FR", {style: "currency", currency: "USD", maximumFractionDigits: nice < 1 ? 2 : 0});
+    svg.append(t);
+  }
+  data.forEach((d, i) => {
+    const x = L + slot * i + (slot - bw) / 2;
+    const segs = [["llm", "var(--series-1)"], ["tr", "var(--series-2)"]];
+    let base = 0;
+    segs.forEach(([k, color], si) => {
+      const v = d[k]; if (v <= 0) return;
+      const y0 = y(base), y1 = y(base + v);
+      const h = Math.max(1, y0 - y1 - (base > 0 ? 2 : 0));       // 2px gap between stacked fills
+      const top = segs.slice(si + 1).every(([k2]) => d[k2] <= 0);
+      const r = top ? Math.min(4, bw / 2, h) : 0;
+      const path = `M${x},${y0 - (base > 0 ? 2 : 0)} V${y0 - (base > 0 ? 2 : 0) - h + r}` +
+        (r ? ` Q${x},${y0 - (base > 0 ? 2 : 0) - h} ${x + r},${y0 - (base > 0 ? 2 : 0) - h} H${x + bw - r} Q${x + bw},${y0 - (base > 0 ? 2 : 0) - h} ${x + bw},${y0 - (base > 0 ? 2 : 0) - h + r}`
+             : ` H${x + bw}`) + ` V${y0 - (base > 0 ? 2 : 0)} Z`;
+      svg.append(svgEl("path", {d: path, fill: color}));
+      base += v;
+    });
+    if (i % 5 === 4 || i === data.length - 1) {
+      const t = svgEl("text", {x: x + bw / 2, y: H - 8, "text-anchor": "middle", "font-size": 11, fill: "var(--text-muted)"});
+      t.textContent = d.date.toLocaleDateString("fr-FR", {day: "numeric", month: "short"});
+      svg.append(t);
+    }
+    const hit = svgEl("rect", {x: L + slot * i, y: T, width: slot, height: H - T - B, fill: "transparent"});
+    hit.addEventListener("mouseenter", () => {
+      tip.innerHTML = "";
+      tip.append(el("b", {}, d.date.toLocaleDateString("fr-FR", {weekday: "long", day: "numeric", month: "long"})),
+        el("div", {}, "Modèle de langage : " + usd(d.llm)),
+        el("div", {}, "Translator : " + usd(d.tr)),
+        el("div", {}, "Total : " + usd(d.llm + d.tr) + " · " + d.builds + " build(s)"));
+      tip.style.opacity = 1;
+      const left = Math.min(Math.max(0, L + slot * i + slot / 2 - 90), wrap.clientWidth - 190);
+      tip.style.left = left + "px"; tip.style.top = "0px";
+    });
+    hit.addEventListener("mouseleave", () => { tip.style.opacity = 0; });
+    svg.append(hit);
+  });
+
+  const table = el("table");
+  const head = el("tr");
+  ["Jour", "Modèle de langage", "Translator", "Total", "Builds"].forEach(h => head.append(el("th", {}, h)));
+  table.append(head);
+  data.slice().reverse().filter(d => d.builds).forEach(d => {
+    const tr = el("tr");
+    [d.date.toLocaleDateString("fr-FR"), usd(d.llm), usd(d.tr), usd(d.llm + d.tr), d.builds]
+      .forEach(v => tr.append(el("td", {}, v)));
+    table.append(tr);
+  });
+  document.getElementById("dayTable").replaceChildren(table);
+}
+
+function renderDetails() {
+  if (!last) return;
+  const fill = (id, rows) => { const dl = document.getElementById(id);
+    for (const [k, v] of rows) dl.append(el("dt", {}, k), el("dd", {}, v)); };
+  const P = last.programmes;
+  fill("content", [
+    ["Programmes avec n° d'épisode", n(last.with_episode) + " (" + pct(last.with_episode, P) + ")"],
+    ["Programmes avec un genre", n(last.with_category) + " (" + pct(last.with_category, P) + ")"],
+    ["… dont genre déduit par le modèle", n(last.category_from_llm)],
+    ["Programmes avec affiche", n(last.with_poster) + " (" + pct(last.with_poster, P) + ")"],
+    ["Créneaux de téléachat regroupés", n(last.shopping_merged)],
+    ["Descriptions vides avant / après", n(last.empty_desc_before) + " → " + n(last.empty_desc_after)],
+    ["… remplies par epgshare01", n(last.desc_filled_fallback)],
+    ["… remplies par TMDB", n(last.desc_filled_tmdb)],
+  ]);
+  const cache = last.cache_entries || {};
+  fill("loc", [
+    ["Titres traduits par le modèle (nouveaux)", n(last.llm_titles_done) + " / " + n(last.llm_titles_new)],
+    ["Textes traduits par le modèle (nouveaux)", n(last.llm_texts_done) + " / " + n(last.llm_texts_new)],
+    ["Tokens modèle (entrée / sortie)", n(last.llm_tokens_in) + " / " + n(last.llm_tokens_out)],
+    ["Caractères envoyés à Translator", n(last.translator_chars)],
+    ["TMDB : programmes enrichis", n(last.tmdb_programmes)],
+    ["TMDB : cherchés / trouvés ce build", n(last.tmdb_looked_up) + " / " + n(last.tmdb_matched_new)],
+    ["TMDB : restant à chercher", n(last.tmdb_pending)],
+    ["Cache : titres / textes du modèle", n(cache.titles) + " / " + n(cache.llm_text)],
+  ]);
+}
+
+function renderHistory() {
+  const t = document.getElementById("history");
+  const head = el("tr");
+  ["Build", "Durée", "Source", "Programmes", "Coût", "Tokens (E/S)", "Translator", "État"].forEach(h => head.append(el("th", {}, h)));
+  t.append(head);
+  HISTORY.slice(-30).reverse().forEach(h => {
+    const tr = el("tr");
+    const ok = h.ok !== false;
+    [new Date(h.time).toLocaleString("fr-FR", {dateStyle: "short", timeStyle: "short"}),
+     Math.round((h.duration_s || 0) / 60) + " min",
+     h.source === "fallback" ? "secours" : "principale",
+     n(h.programmes), usd(h.cost_total),
+     n(h.llm_tokens_in) + " / " + n(h.llm_tokens_out),
+     n(h.translator_chars) + " car."].forEach(v => tr.append(el("td", {}, v)));
+    tr.append(el("td", {class: ok ? "ok" : "ko"}, ok ? "✓ OK" : "✕ Erreur"));
+    t.append(tr);
+  });
+}
+
+function renderFiles() {
+  const ul = document.getElementById("files");
+  const files = (last && last.files_mb) || {};
+  const names = Object.keys(files).sort();
+  for (const f of names) {
+    const li = el("li");
+    li.append(el("a", {href: f + ".gz"}, f + ".gz"), document.createTextNode(" — " +
+      files[f].toLocaleString("fr-FR") + " Mo décompressé"));
+    ul.append(li);
+  }
+}
+
+document.getElementById("toggleTable").addEventListener("click", e => {
+  const box = document.getElementById("dayTable");
+  box.hidden = !box.hidden;
+  e.target.textContent = box.hidden ? "Afficher les valeurs en tableau" : "Masquer le tableau";
+});
+renderHeader(); renderTiles(); renderChart(); renderDetails(); renderHistory(); renderFiles();
+addEventListener("resize", renderChart);
+</script>
+</body>
+</html>

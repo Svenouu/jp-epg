@@ -25,6 +25,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+import stats
+
 API = "https://api.themoviedb.org/3"
 IMG = "https://image.tmdb.org/t/p/w500"
 MAX_LOOKUPS_PER_RUN = int(os.environ.get("TMDB_MAX_LOOKUPS", "1500"))
@@ -119,6 +121,8 @@ def lookup(wanted, table, llm_titles):
     token = os.environ.get("TMDB_READ_TOKEN", "").strip()
     todo = [t for t in wanted if t not in table][:MAX_LOOKUPS_PER_RUN]
     print(f"  TMDB: {len(wanted)} film/series titles, {len(todo)} new")
+    stats.record("tmdb_candidates", len(wanted))
+    stats.record("tmdb_pending", max(0, len([t for t in wanted if t not in table]) - len(todo)))
     if not todo:
         return
     if not token:
@@ -138,3 +142,5 @@ def lookup(wanted, table, llm_titles):
         print(f"  WARN: TMDB refused the token (HTTP {e.code}); skipping TMDB",
               file=sys.stderr)
     print(f"  TMDB: matched {found} of {len(todo)} looked up")
+    stats.record("tmdb_looked_up", len(todo))
+    stats.record("tmdb_matched_new", found)

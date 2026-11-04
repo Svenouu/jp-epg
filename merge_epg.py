@@ -41,7 +41,8 @@ import gzip
 from datetime import datetime, timezone, timedelta
 import xml.etree.ElementTree as ET
 
-from enrich import enrich, strip_posters
+import stats
+from enrich import enrich, merge_shopping, strip_posters
 from translate import translated_trees
 
 # Translated editions published next to epg-merged.xml as epg-<lang>.xml
@@ -288,6 +289,7 @@ def fill_missing_descs(out):
         el.set("lang", "ja")
         filled += 1
     print(f"descriptions: filled {filled} of {missing} empty from fallback source")
+    stats.record("desc_filled_fallback", filled)
 
 
 def load_channel_ids():
@@ -327,6 +329,7 @@ def trim_to_fit(merged):
     size = size_of(tv)
     if size <= SIZE_CAP:
         print(f"  window {lo}..+8d with posters: {kept} programmes, {size/1e6:.1f} MB (fits)")
+        stats.record("days_ahead", 8)
         return tv
     print(f"  window {lo}..+8d with posters: {size/1e6:.1f} MB over cap, dropping posters")
     strip_posters(merged)
@@ -338,6 +341,8 @@ def trim_to_fit(merged):
         size = size_of(tv)
         if size <= SIZE_CAP:
             print(f"  window {lo}..+{fwd}d: {kept} programmes, {size/1e6:.1f} MB (fits)")
+            stats.record("days_ahead", fwd)
+            stats.record("posters_dropped", True)
             return tv
         print(f"  window {lo}..+{fwd}d: {size/1e6:.1f} MB over cap, trying shorter")
     tv, kept = build((jst + timedelta(days=1)).strftime("%Y%m%d"))
@@ -362,6 +367,8 @@ def write_xmltv(tree, path):
         f.write(gzip.compress(data, compresslevel=9, mtime=0))
     print(f"WROTE {path}: {len(tree.findall('channel'))} channels, "
           f"{len(tree.findall('programme'))} programmes, {len(data)/1e6:.1f} MB")
+    sizes = stats.STATS.setdefault("files_mb", {})
+    sizes[path] = round(len(data) / 1e6, 2)
 
 
 def main():
@@ -374,6 +381,7 @@ def main():
               "refusing to overwrite the live EPG", file=sys.stderr)
         sys.exit(1)
     print(f"source: {'fallback' if used_fallback else 'primary'}")
+    stats.record("source", "fallback" if used_fallback else "primary")
 
     out = ET.Element("tv", {"generator-info-name": "personal merged EPG"})
     n_ch = n_pr = 0
@@ -389,6 +397,8 @@ def main():
             t = pr.findtext("title") or ""
             titles[t] = titles.get(t, 0) + 1
     print(f"merged (full): {n_ch} channels, {n_pr} programmes")
+    stats.record("channels", n_ch)
+    stats.record("channels_tracked", len(needed))
 
     # Safety net: abort rather than publish a feed that's missing most of its
     # channels — upstream likely changed channel ids or is serving a broken
@@ -415,7 +425,12 @@ def main():
         fill_missing_descs(out)
 
     enrich(out)
+    stats.record("shopping_merged", merge_shopping(out))
     final = trim_to_fit(out)
+    progs = final.findall("programme")
+    stats.record("programmes", len(progs))
+    stats.record("with_episode", sum(p.find("episode-num") is not None for p in progs))
+    stats.record("empty_desc_before", sum(not (p.findtext("desc") or "").strip() for p in progs))
 
     # English/French editions (plus "<lang>-ja" and "<lang>-romaji" title
     # variants). This also adds LLM genres and TMDB extras to `final` itself,
@@ -434,6 +449,12 @@ def main():
     write_xmltv(final, "epg-merged.xml")
     for name, tree in editions.items():
         write_xmltv(tree, f"epg-{name}.xml")
+
+    progs = final.findall("programme")
+    stats.record("with_category", sum(p.find("category") is not None for p in progs))
+    stats.record("with_poster", sum(p.find("icon") is not None for p in progs))
+    stats.record("empty_desc_after", sum(not (p.findtext("desc") or "").strip() for p in progs))
+    stats.publish()
 
 if __name__ == "__main__":
     main()

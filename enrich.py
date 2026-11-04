@@ -296,9 +296,58 @@ def enrich(root):
         with_cat += bool(cat)
     print(f"enriched {n} programmes: {with_ep} with episode numbers, "
           f"{with_flags} with flags, {with_cat} with a category")
+    try:
+        import stats
+        stats.record("with_flags", with_flags)
+        stats.record("category_from_rules", with_cat)
+    except ImportError:
+        pass
 
 
 def strip_posters(root):
     for pr in root.findall("programme"):
         for ic in pr.findall("icon"):
             pr.remove(ic)
+
+
+def merge_shopping(root):
+    """Collapse back-to-back shopping slots on a channel into one block.
+
+    Teleshopping fills thousands of 15-30 minute slots with ever-changing
+    titles ("MXショッピング", "ショップチャンネル 近藤いちおし..."), which clutter
+    the guide grid. Consecutive ones (each starting exactly when the previous
+    ends) become a single programme spanning them all. Returns the number of
+    programmes removed."""
+    label = CATEGORY_LABELS["shopping"]["ja"]
+    by_channel = {}
+    for pr in root.findall("programme"):
+        by_channel.setdefault(pr.get("channel"), []).append(pr)
+
+    removed = 0
+    for progs in by_channel.values():
+        progs.sort(key=lambda p: p.get("start", ""))
+        runs, run = [], []
+        for pr in progs:
+            shop = (pr.findtext("category") or "") == label
+            if shop and run and run[-1].get("stop") == pr.get("start"):
+                run.append(pr)
+                continue
+            if len(run) > 1:
+                runs.append(run)
+            run = [pr] if shop else []
+        if len(run) > 1:
+            runs.append(run)
+
+        for run in runs:
+            head = run[0]
+            titles = {p.findtext("title") for p in run}
+            head.set("stop", run[-1].get("stop"))
+            if len(titles) > 1:
+                head.find("title").text = "テレビショッピング"
+            for el in [e for e in head if e.tag not in ("title", "category")]:
+                head.remove(el)
+            for pr in run[1:]:
+                root.remove(pr)
+                removed += 1
+    print(f"shopping: merged {removed} back-to-back slots into their neighbours")
+    return removed

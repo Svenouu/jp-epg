@@ -27,6 +27,13 @@ English + romaji:     https://svenouu.github.io/jp-epg/epg-en-romaji.xml
 French + romaji:      https://svenouu.github.io/jp-epg/epg-fr-romaji.xml
 ```
 
+**Status page:** https://svenouu.github.io/jp-epg/status.html — last build,
+estimated Azure cost per build and per day (30 days), coverage (episodes,
+genres, posters, TMDB, empty descriptions), what's left in Japanese, and the
+build history. Rebuilt by every build from `stats-history.json` (kept on the
+site itself, last 120 builds); `stats.py` collects the numbers and holds the
+list prices used for the estimates.
+
 Every file also exists gzipped: append `.gz` (e.g. `epg-fr.xml.gz`, ~2 MB
 instead of ~12 MB) — TiviMate and most players read it directly, and it loads
 much faster on low-end Android/Fire TV boxes.
@@ -53,6 +60,8 @@ Upstream packs everything into the Japanese title; `enrich.py` unpacks it:
   title, so new and live programmes also get a title mark: `(Nouveau)` /
   `(En direct)`, `(New)` / `(Live)`, `【新】` / `【生】` (which may keep that
   episode out of a TiviMate series recording, as those match on the title).
+- **Teleshopping** slots that follow each other on a channel are merged
+  into one block (`merge_shopping` in `enrich.py`), which declutters the grid.
 - **TMDB rating/year** also open the description (`★ 7,3/10 · 2024 — …`),
   since TiviMate shows neither `<star-rating>` nor `<date>`.
 - **`<category>`**: from title keywords, else from what the channel mostly

@@ -36,6 +36,7 @@ import xml.etree.ElementTree as ET
 
 import cache_store
 import llm
+import stats
 import tmdb
 from enrich import CATEGORY_LABELS, reorder
 
@@ -216,6 +217,7 @@ def run_jobs(label, ordered, table, send):
                 done += 1
     print(f"  [{label}] {len(todo)} new texts, {done} done "
           f"({MAX_SOURCE_CHARS_PER_RUN - budget} source chars billed)")
+    stats.add("translator_chars", MAX_SOURCE_CHARS_PER_RUN - budget)
 
 
 def translate_texts(ordered, langs, cache, glossary):
@@ -409,6 +411,7 @@ def translated_trees(tree, langs):
     for name in ("titles", "tmdb"):
         cache[name] = {k: v for k, v in cache.get(name, {}).items() if k in title_rank}
     cache_store.save(cache)
+    stats.record("cache_entries", {k: len(v) for k, v in cache.items() if isinstance(v, dict)})
 
     # Language-neutral extras, applied to the Japanese tree itself.
     tmdb_desc = {}          # programme index -> TMDB info, for empty descriptions
@@ -431,6 +434,10 @@ def translated_trees(tree, langs):
                     desc.text = info["ja"]
                     desc.set("lang", "ja")
         reorder(pr)
+    stats.record("category_from_llm", added_cats)
+    stats.record("tmdb_programmes",
+                 sum(1 for p in programmes if tmdb_table.get(clean(p.findtext("title")))))
+    stats.record("desc_filled_tmdb", len(tmdb_desc))
     print(f"  metadata: {added_cats} genres from the LLM, "
           f"{sum(1 for p in programmes if tmdb_table.get(clean(p.findtext('title'))))} "
           f"programmes matched on TMDB, {len(tmdb_desc)} empty descriptions filled from it")
@@ -500,6 +507,7 @@ def translated_trees(tree, langs):
                     lead.append(ro)
                 prepend_desc(p, [x for x in lead if x], lang)
         print(f"  [{lang}] {missing} titles/sub-titles/descriptions left in Japanese")
+        stats.STATS.setdefault("left_japanese", {})[lang] = missing
         result.update(variants)
 
     # Same rating/year opening and title marks on the Japanese tree — only
