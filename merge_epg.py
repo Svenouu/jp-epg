@@ -24,6 +24,8 @@ What it does
 4. When the primary source served the run, fills its empty programme
    descriptions from the fallback source (best effort: matched by channel and
    absolute start time; skipped silently if the fallback is unreachable).
+   Then merges the result into the previous build's listings (epg-state.xml.gz)
+   instead of starting over: see carry_over().
 5. Refuses to publish a near-empty or decoy-looking result (safety nets).
 6. Structures the flat Japanese titles (episode numbers, flags, categories,
    posters) — see enrich.py.
@@ -38,6 +40,8 @@ What it does
 import sys
 import urllib.request
 import gzip
+import zlib
+from bisect import bisect_left
 from datetime import datetime, timezone, timedelta
 import xml.etree.ElementTree as ET
 
@@ -162,6 +166,13 @@ FALLBACK_CHANNEL_MAP = {
 }
 
 CHANNEL_IDS_FILE = "channel_ids.txt"
+
+# Raw (pre-enrichment) listings of the previous build, which each build
+# updates rather than regenerating from scratch — see carry_over(). The
+# workflow restores it from the dist branch and publishes it back there.
+STATE_FILE = "epg-state.xml.gz"
+# Attribute (state file only) recording which source a programme came from.
+ORIGIN_ATTR = "src"
 
 # Max start-time gap (seconds) for two sources' programmes to count as the
 # same slot when borrowing descriptions. Starts normally match exactly; a few
@@ -292,6 +303,143 @@ def fill_missing_descs(out):
     stats.record("desc_filled_fallback", filled)
 
 
+def load_state():
+    """The previous build's raw listings, or None (first run, unreadable file)."""
+    try:
+        with gzip.open(STATE_FILE, "rb") as fh:
+            root = ET.fromstring(fh.read())
+    except FileNotFoundError:
+        print(f"no previous state ({STATE_FILE}); building from scratch")
+        return None
+    except (OSError, EOFError, zlib.error, ET.ParseError) as e:
+        print(f"  WARN: unreadable {STATE_FILE} ({e}); building from scratch",
+              file=sys.stderr)
+        return None
+    return root if root.tag == "tv" else None
+
+
+def save_state(tree):
+    data = ET.tostring(tree, encoding="utf-8")
+    with open(STATE_FILE, "wb") as f:
+        f.write(gzip.compress(data, compresslevel=9, mtime=0))
+    print(f"WROTE {STATE_FILE}: {len(tree.findall('programme'))} programmes, "
+          f"{len(data)/1e6:.1f} MB raw")
+
+
+def programme_span(pr):
+    """(start, stop) as datetimes; (None, None) if the start is unparsable."""
+    start = parse_xmltv_time(pr.get("start"))
+    if start is None:
+        return None, None
+    stop = parse_xmltv_time(pr.get("stop"))
+    if stop is None or stop <= start:
+        stop = start + timedelta(minutes=1)
+    return start, stop
+
+
+class SlotIndex:
+    """Answers "does [start, stop) overlap any of these programmes?"."""
+
+    def __init__(self, spans):
+        spans = sorted(spans)
+        self.starts = [s for s, _ in spans]
+        self.max_stops = []          # running max, robust to overlapping input
+        for _, stop in spans:
+            prev = self.max_stops[-1] if self.max_stops else stop
+            self.max_stops.append(max(prev, stop))
+
+    def overlaps(self, start, stop):
+        i = bisect_left(self.starts, stop)       # programmes starting before `stop`
+        return i > 0 and self.max_stops[i - 1] > start
+
+
+def index_by_channel(programmes):
+    spans = {}
+    for pr in programmes:
+        start, stop = programme_span(pr)
+        if start is not None:
+            spans.setdefault(pr.get("channel"), []).append((start, stop))
+    return {ch: SlotIndex(sp) for ch, sp in spans.items()}
+
+
+def carry_over(out, needed, used_fallback):
+    """Update the previous build's listings with this run's, in place of
+    publishing this run's alone.
+
+    A run doesn't always see everything the previous one did: the fallback
+    source lacks 15 of our channels and has shorter, plainer listings, and
+    either source can drop a channel or a day. So, per channel:
+    - a previous programme is kept wherever this run has nothing for its
+      time slot (channel absent, slot outside the fetched window, gap);
+    - where both have something, this run's programmes win (schedule
+      changes come through) — except that fallback-source programmes never
+      displace ones the primary source provided earlier: those are richer,
+      and swapping them back and forth would retranslate the guide on every
+      outage. The fallback then only fills what the primary never covered.
+    Programmes older than the catch-up window are dropped from the state.
+    Returns the merged tree (channels first, programmes by channel and time)."""
+    origin = "fallback" if used_fallback else "primary"
+    fresh = out.findall("programme")
+    for pr in fresh:
+        pr.set(ORIGIN_ATTR, origin)
+    channels = {ch.get("id"): ch for ch in out.findall("channel")}
+
+    prev = load_state()
+    kept_old, displaced = [], 0
+    if prev is not None:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=CATCHUP_DAYS + 1)
+        old = []
+        for pr in prev.findall("programme"):
+            start, stop = programme_span(pr)
+            if pr.get("channel") in needed and start is not None and stop >= cutoff:
+                old.append(pr)
+
+        if used_fallback:
+            # Previous primary-source programmes hold their slots.
+            holders = [p for p in old if p.get(ORIGIN_ATTR, "primary") == "primary"]
+            old = [p for p in old if p.get(ORIGIN_ATTR, "primary") != "primary"]
+            held = index_by_channel(holders)
+            survivors = []
+            for pr in fresh:
+                idx = held.get(pr.get("channel"))
+                start, stop = programme_span(pr)
+                if idx and start is not None and idx.overlaps(start, stop):
+                    displaced += 1
+                else:
+                    survivors.append(pr)
+            fresh = survivors
+            kept_old.extend(holders)
+
+        covered = index_by_channel(fresh)
+        for pr in old:
+            idx = covered.get(pr.get("channel"))
+            if not (idx and idx.overlaps(*programme_span(pr))):
+                kept_old.append(pr)
+
+        for ch in prev.findall("channel"):
+            cid = ch.get("id")
+            # The fallback names channels differently; keep the known element.
+            if cid in needed and (used_fallback or cid not in channels):
+                channels[cid] = ch
+
+    programmes = fresh + kept_old
+    order = {cid: i for i, cid in enumerate(channels)}
+    epoch = datetime.min.replace(tzinfo=timezone.utc)
+    programmes.sort(key=lambda p: (order.get(p.get("channel"), len(order)),
+                                   programme_span(p)[0] or epoch))
+    merged = ET.Element("tv", out.attrib)
+    merged.extend(channels.values())
+    merged.extend(programmes)
+    print(f"carry-over: {len(fresh)} programmes from this run, {len(kept_old)} kept "
+          f"from the previous build"
+          + (f" ({displaced} fallback programmes skipped: slot already covered "
+             f"by the primary source)" if displaced else ""))
+    stats.record("channels", len(channels))
+    stats.record("programmes_fresh", len(fresh))
+    stats.record("programmes_carried", len(kept_old))
+    return merged
+
+
 def load_channel_ids():
     with open(CHANNEL_IDS_FILE, encoding="utf-8") as fh:
         return {
@@ -397,7 +545,7 @@ def main():
             t = pr.findtext("title") or ""
             titles[t] = titles.get(t, 0) + 1
     print(f"merged (full): {n_ch} channels, {n_pr} programmes")
-    stats.record("channels", n_ch)
+    stats.record("channels_fresh", n_ch)
     stats.record("channels_tracked", len(needed))
 
     # Safety net: abort rather than publish a feed that's missing most of its
@@ -423,6 +571,13 @@ def main():
 
     if not used_fallback:
         fill_missing_descs(out)
+
+    # Incremental build: fold this run into the previous build's listings, so
+    # a partial run (fallback source, missing channel...) loses nothing.
+    out = carry_over(out, needed, used_fallback)
+    save_state(out)
+    for pr in out.findall("programme"):
+        pr.attrib.pop(ORIGIN_ATTR, None)
 
     enrich(out)
     stats.record("shopping_merged", merge_shopping(out))

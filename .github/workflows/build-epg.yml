@@ -6,7 +6,8 @@ name: Build EPG
 # epg-en-ja.xml / epg-fr-ja.xml, romaji variants epg-en-romaji.xml /
 # epg-fr-romaji.xml, and a .xml.gz copy of each).
 # The `dist` branch is force-pushed as a single orphan commit each run, so the
-# file never accumulates in git history. Pages auto-redeploys on push.
+# file never accumulates in git history. It also carries epg-state.xml.gz, the
+# raw listings the next build starts from. Pages auto-redeploys on push.
 
 on:
   schedule:
@@ -41,6 +42,15 @@ jobs:
           path: translation-cache.json
           key: translations-${{ github.run_id }}
           restore-keys: translations-
+
+      # Raw listings of the previous build (published on the dist branch), which
+      # this build updates instead of starting from scratch: whatever this run
+      # doesn't see (fallback source, missing channel) is kept as it was.
+      - name: Restore previous guide state
+        run: |
+          if git fetch --depth=1 origin dist; then
+            git show FETCH_HEAD:epg-state.xml.gz > epg-state.xml.gz || rm -f epg-state.xml.gz
+          fi
 
       - name: Build merged EPG (+ English/French editions)
         run: python merge_epg.py

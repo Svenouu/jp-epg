@@ -188,7 +188,8 @@ function renderTiles() {
     ["Coût du dernier build", usd(last.cost_total), "LLM " + usd(last.cost_llm) + " · Translator " + usd(last.cost_translator)],
     ["Coût sur 30 jours", usd(month), d.filter(x => x.builds).length + " jours avec build"],
     ["Programmes", n(last.programmes), (last.days_ahead ?? "—") + " jours à venir + 7 de replay"],
-    ["Chaînes", n(last.channels) + " / " + n(last.channels_tracked), "source " + (last.source === "fallback" ? "de secours" : "principale")],
+    ["Chaînes", n(last.channels) + " / " + n(last.channels_tracked), "source " + (last.source === "fallback" ? "de secours" : "principale")
+      + (last.programmes_carried ? " · " + n(last.programmes_carried) + " programmes repris du build précédent" : "")],
     ["Descriptions vides", pct(last.empty_desc_after, last.programmes), n(last.empty_desc_after) + " programmes"],
     ["Restés en japonais (FR)", n(left.fr), "EN : " + n(left.en) + " · réessayés au prochain build"],
   ];

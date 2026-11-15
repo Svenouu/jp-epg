@@ -101,6 +101,16 @@ tokens. Only the channel ids it references are committed, in
    channels) are filled from epgshare01, matched by channel and absolute
    start time. epgshare01 only lists the next few days fully, so later days
    stay mostly description-less.
+
+   The build is incremental: the run's listings are merged into the previous
+   build's raw listings (`epg-state.xml.gz`, kept on the `dist` branch)
+   rather than replacing them. A previous programme stays wherever this run
+   has nothing for its time slot (channel missing, slot outside the fetched
+   window); where both have something, the new one wins — except that
+   fallback-source programmes never displace ones the primary source
+   provided, they only fill what it never covered. So a run on the fallback
+   keeps the 15 channels and the richer listings it can't see. State older
+   than the catch-up window is dropped.
 4. `enrich.py` structures each programme (see above), then the result is
    trimmed to fit under a size ceiling and written as `epg-merged.xml`.
 5. `translate.py` then writes `epg-en.xml` and `epg-fr.xml` (plus the `-ja`
