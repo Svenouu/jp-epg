@@ -47,6 +47,9 @@ GLOSSARY_FILE = "glossary.json"
 CHUNK_CHARS = 10000
 CHUNK_TEXTS = 500
 
+# Days a cached translation survives after the guide stops using it.
+CACHE_GRACE_DAYS = 7
+
 # Spend guard: Azure bills every source character once per target language
 # (and once more for romaji). This caps source characters per language per
 # run, so it only ever bites if something goes wrong (e.g. a lost cache).
@@ -416,14 +419,42 @@ def translated_trees(tree, langs):
     romanize([t for t in titles if not (llm_titles.get(t) or {}).get("ro")], cache)
     llm.report_usage()
 
-    # Keep only what this guide uses, so the cache never outgrows one guide.
+    # Drop what the guide stopped using, so the cache never outgrows it — but
+    # only after CACHE_GRACE_DAYS: a build that sees a much smaller guide (the
+    # fallback source without the previous build's state) must not throw away
+    # translations the next full build would pay for again.
     used = set(text_rank) | set(title_rank) | set(text_series)
-    for name in (*langs, "romaji", "llm_text"):
-        cache[name] = {k: v for k, v in cache.get(name, {}).items() if k in used}
-    for name in ("titles", "tmdb"):
-        cache[name] = {k: v for k, v in cache.get(name, {}).items() if k in title_rank}
+    today = datetime.now(timezone.utc).date()
+    unused_since = cache.get("unused_since")
+    if not isinstance(unused_since, dict):
+        unused_since = {}
+    lingering = 0
+    for name in (*langs, "romaji", "llm_text", "titles", "tmdb"):
+        in_use = title_rank if name in ("titles", "tmdb") else used
+        since = unused_since.get(name)
+        since = since if isinstance(since, dict) else {}
+        kept, kept_since = {}, {}
+        for k, v in cache.get(name, {}).items():
+            if k not in in_use:
+                first = since.get(k) or today.isoformat()
+                try:
+                    age = (today - datetime.strptime(first, "%Y-%m-%d").date()).days
+                except (TypeError, ValueError):
+                    first, age = today.isoformat(), 0
+                if age > CACHE_GRACE_DAYS:
+                    continue
+                kept_since[k] = first
+            kept[k] = v
+        cache[name] = kept
+        unused_since[name] = kept_since
+        lingering += len(kept_since)
+    cache["unused_since"] = unused_since
     cache_store.save(cache)
-    stats.record("cache_entries", {k: len(v) for k, v in cache.items() if isinstance(v, dict)})
+    print(f"  cache: {lingering} entries no longer in the guide kept for up to "
+          f"{CACHE_GRACE_DAYS} days")
+    stats.record("cache_entries", {k: len(v) for k, v in cache.items()
+                                   if isinstance(v, dict) and k != "unused_since"})
+    stats.record("cache_lingering", lingering)
 
     # Language-neutral extras, applied to the Japanese tree itself.
     tmdb_desc = {}          # programme index -> TMDB info, for empty descriptions
